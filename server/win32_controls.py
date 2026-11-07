@@ -217,11 +217,15 @@ def launch_application(app_key):
     app_key = (app_key or "").strip().lower()
 
     if app_key == "steamghost":
-        exe = r"C:\Users\dev\Desktop\SteamGhost.exe"
+        exe = os.path.expandvars(r"%LOCALAPPDATA%\Programs\SteamGhost\SteamGhost.App.exe")
         if os.path.exists(exe):
-            subprocess.Popen([exe], shell=True)
+            subprocess.Popen([exe], cwd=os.path.dirname(exe), shell=True)
             return {"status": "ok", "message": "SteamGhost launched"}
-        return {"status": "error", "message": "SteamGhost.exe not found on Desktop"}
+        desktop_exe = r"C:\Users\dev\Desktop\SteamGhost.exe"
+        if os.path.exists(desktop_exe):
+            subprocess.Popen([desktop_exe], shell=True)
+            return {"status": "ok", "message": "SteamGhost launched via Desktop"}
+        return {"status": "error", "message": "SteamGhost executable not found"}
 
     elif app_key == "steam":
         os.system("start steam://open/main")
