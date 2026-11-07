@@ -19,6 +19,19 @@ kernel32 = ctypes.windll.kernel32
 
 DEFAULT_CDP_PORT = 60382
 ANTIGRAVITY_EXE = r"C:\Users\dev\AppData\Local\Programs\antigravity\Antigravity.exe"
+DEVTOOLS_PORT_FILE = os.path.expandvars(r"%APPDATA%\Antigravity\DevToolsActivePort")
+
+def get_active_cdp_port(fallback=DEFAULT_CDP_PORT):
+    """Dynamically retrieves the active DevTools port from Electron's DevToolsActivePort file."""
+    try:
+        if os.path.exists(DEVTOOLS_PORT_FILE):
+            with open(DEVTOOLS_PORT_FILE, "r", encoding="utf-8") as f:
+                first_line = f.readline().strip()
+                if first_line.isdigit():
+                    return int(first_line)
+    except Exception as e:
+        logger.debug(f"Could not read DevToolsActivePort file: {e}")
+    return fallback
 
 def ensure_antigravity_running():
     """Launches Antigravity desktop executable if not currently running."""
@@ -35,8 +48,10 @@ def ensure_antigravity_running():
         logger.error(f"Error checking/launching Antigravity: {e}")
     return False
 
-async def find_antigravity_target(port=DEFAULT_CDP_PORT):
+async def find_antigravity_target(port=None):
     """Finds the active Antigravity conversation tab via DevTools HTTP endpoints."""
+    if port is None:
+        port = get_active_cdp_port()
     url = f"http://127.0.0.1:{port}/json/list"
     try:
         async with aiohttp.ClientSession() as session:
@@ -92,7 +107,7 @@ def focus_antigravity_window():
         logger.error(f"Error focusing window: {e}")
     return False
 
-async def get_conversations_list(port=DEFAULT_CDP_PORT):
+async def get_conversations_list(port=None):
     """Retrieves all active and recent conversations from Antigravity sidebar."""
     target = await find_antigravity_target(port)
     if not target:
@@ -141,7 +156,7 @@ async def get_conversations_list(port=DEFAULT_CDP_PORT):
         logger.error(f"Error fetching conversations: {e}")
         return {"status": "error", "message": str(e), "conversations": []}
 
-async def switch_conversation(conv_id, port=DEFAULT_CDP_PORT):
+async def switch_conversation(conv_id, port=None):
     """Navigates Antigravity UI to the specified conversation ID."""
     if not conv_id:
         return {"status": "error", "message": "Missing conversation ID"}
@@ -177,7 +192,7 @@ async def switch_conversation(conv_id, port=DEFAULT_CDP_PORT):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-async def create_new_conversation(port=DEFAULT_CDP_PORT):
+async def create_new_conversation(port=None):
     """Triggers 'New Conversation' in Antigravity to create a fresh chat session."""
     target = await find_antigravity_target(port)
     if not target:
@@ -210,7 +225,7 @@ async def create_new_conversation(port=DEFAULT_CDP_PORT):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-async def get_antigravity_status(port=DEFAULT_CDP_PORT):
+async def get_antigravity_status(port=None):
     """Returns the current connection status, active conversation title, and URL."""
     target = await find_antigravity_target(port)
     if not target:
@@ -227,7 +242,7 @@ async def get_antigravity_status(port=DEFAULT_CDP_PORT):
         "id": target.get("id", "")
     }
 
-async def send_prompt_to_antigravity(prompt_text, conv_id=None, focus_window=False, port=DEFAULT_CDP_PORT):
+async def send_prompt_to_antigravity(prompt_text, conv_id=None, focus_window=False, port=None):
     """
     Injects the given prompt text directly into Antigravity's active chat canvas
     and triggers prompt submission. Supports switching conversation or starting a new one.
