@@ -22,6 +22,16 @@ _tunnel_process = None
 _current_url = None
 _lock = threading.Lock()
 
+def _publish_url_to_github(url):
+    try:
+        repo_dir = SERVER_DIR.parent
+        subprocess.run(["git", "add", "server/tunnel_url.txt"], cwd=str(repo_dir), capture_output=True, timeout=5)
+        subprocess.run(["git", "commit", "-m", "chore: auto-update cloudflare tunnel url"], cwd=str(repo_dir), capture_output=True, timeout=5)
+        subprocess.run(["git", "push", "origin", "main"], cwd=str(repo_dir), capture_output=True, timeout=15)
+        print("[Tunnel] Published new tunnel URL to GitHub for mobile auto-discovery!")
+    except Exception as e:
+        print(f"[Tunnel] Note on auto-publishing URL to GitHub: {e}")
+
 def get_current_tunnel_url():
     global _current_url
     with _lock:
@@ -71,6 +81,7 @@ def start_tunnel(local_port=8765):
                             _current_url = url
                         try:
                             URL_CACHE_FILE.write_text(url, encoding="utf-8")
+                            threading.Thread(target=_publish_url_to_github, args=(url,), daemon=True).start()
                         except Exception:
                             pass
                         print(f"🔥 [Tunnel] Online! Global HTTPS URL: {url}")

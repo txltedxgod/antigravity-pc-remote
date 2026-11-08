@@ -53,12 +53,17 @@
           <div class="pulse-ring pulse-offline"></div>
           <div class="banner-texts">
             <span class="banner-title">ПК не отвечает на запросы</span>
-            <span class="banner-desc">Компьютер спит или выключен</span>
+            <span class="banner-desc" id="offlineDesc">Не в одной сети Wi-Fi или ПК выключен</span>
           </div>
         </div>
-        <button class="btn btn-wake" id="btnWakeOnLan">
-          <span>⚡ Разбудить (WoL)</span>
-        </button>
+        <div style="display: flex; gap: 8px; margin-top: 10px; width: 100%;">
+          <button class="btn btn-primary" id="btnConnectCloud" style="flex: 1.2; padding: 10px 8px; font-size: 13px;">
+            <span>🌐 Найти через интернет</span>
+          </button>
+          <button class="btn btn-wake" id="btnWakeOnLan" style="flex: 0.8; padding: 10px 8px; font-size: 13px;">
+            <span>⚡ WoL</span>
+          </button>
+        </div>
       </div>
 
       <!-- Top Chat Controls Bar -->
@@ -517,11 +522,16 @@
         <label for="serverPortInput">Порт HTTP (для локального IP):</label>
         <input type="number" id="serverPortInput" placeholder="8765">
       </div>
-      <div class="cloud-tunnel-info" id="cloudTunnelInfoBox" style="display: none;">
-        <span class="cloud-info-label">🌐 Доступ из любой точки мира (Cloudflare):</span>
-        <div class="cloud-url-row">
-          <input type="text" id="cloudUrlDisplay" readonly>
-          <button class="chip-action" id="btnUseCloudUrl">Использовать</button>
+      <div class="cloud-tunnel-info" id="cloudTunnelInfoBox" style="display: block;">
+        <span class="cloud-info-label">🌐 Автопоиск ПК в глобальной сети:</span>
+        <div style="display: flex; gap: 8px; margin-top: 6px;">
+          <button class="btn btn-secondary" id="btnAutoDiscoverCloud" style="flex: 1; padding: 8px 12px; font-size: 12px;">
+            <span>⚡ Авто-найти Cloudflare URL</span>
+          </button>
+        </div>
+        <div class="cloud-url-row" style="margin-top: 8px;">
+          <input type="text" id="cloudUrlDisplay" readonly placeholder="https://xxxx.trycloudflare.com">
+          <button class="chip-action" id="btnUseCloudUrl">Вставить</button>
         </div>
       </div>
 

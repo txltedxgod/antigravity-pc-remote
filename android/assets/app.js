@@ -21,6 +21,35 @@ let chatPollTimer = null;
 let statusPollTimer = null;
 let cloudUrl = localStorage.getItem("pc_remote_cloud_url") || "";
 
+// Auto-Discovery of Live Cloudflare Tunnel URL from GitHub Repository
+let isDiscoveringCloud = false;
+async function discoverCloudUrl(force = false) {
+  if (isDiscoveringCloud) return cloudUrl;
+  isDiscoveringCloud = true;
+  try {
+    const res = await fetch(`https://api.github.com/repos/txltedxgod/antigravity-pc-remote/contents/server/tunnel_url.txt?t=${Date.now()}`, {
+      headers: { "Accept": "application/vnd.github.v3+json" }
+    });
+    if (!res.ok) return cloudUrl;
+    const data = await res.json();
+    if (data && data.content) {
+      const decoded = atob(data.content.replace(/\s/g, "")).trim();
+      if (decoded.startsWith("https://") && decoded.includes("trycloudflare.com")) {
+        cloudUrl = decoded;
+        localStorage.setItem("pc_remote_cloud_url", decoded);
+        const disp = document.getElementById("cloudUrlDisplay");
+        if (disp) disp.value = decoded;
+        return decoded;
+      }
+    }
+  } catch (e) {
+    console.error("Cloud discovery error:", e);
+  } finally {
+    isDiscoveringCloud = false;
+  }
+  return cloudUrl;
+}
+
 // Helpers: Intelligent URL Resolver (LAN IP vs Global Cloudflare Tunnel)
 function getApiUrl(path) {
   let host = (config.host || "").trim();
@@ -77,7 +106,7 @@ function showToast(message, duration = 2400) {
   }, duration);
 }
 
-// Generic Fetch Wrapper
+// Generic Fetch Wrapper with Smart Cloudflare Auto-Fallback
 async function apiCall(path, method = "GET", body = null) {
   const url = getApiUrl(path);
   const opts = {
@@ -88,33 +117,63 @@ async function apiCall(path, method = "GET", body = null) {
     opts.body = JSON.stringify(body);
   }
 
+  const isLocalHost = !config.host.includes("trycloudflare.com");
+  const timeoutMs = isLocalHost ? 3000 : 8000;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 4500);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   opts.signal = controller.signal;
 
   try {
     const res = await fetch(url, opts);
     clearTimeout(timeoutId);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch (err) {
     clearTimeout(timeoutId);
-    // Intelligent Auto-Fallback: if local Wi-Fi drops and we have cloudUrl, seamlessly retry via Cloudflare
-    if (cloudUrl && !config.host.includes("trycloudflare.com")) {
-      try {
-        const cloudBase = cloudUrl.replace(/\/+$/, "");
-        const fallbackUrl = `${cloudBase}${path}`;
-        const retryRes = await fetch(fallbackUrl, {
-          method,
-          headers: { "Content-Type": "application/json" },
-          body: body ? JSON.stringify(body) : undefined
-        });
-        if (retryRes.ok) {
-          config.host = cloudUrl;
-          localStorage.setItem("pc_remote_host", cloudUrl);
-          showToast("🌐 Переключено на Cloudflare туннель!");
-          return await retryRes.json();
-        }
-      } catch (e) {}
+
+    // Intelligent Auto-Fallback: if local Wi-Fi drops or unreachable, seamlessly retry via Cloudflare
+    if (isLocalHost) {
+      let targetCloud = cloudUrl;
+      if (!targetCloud) {
+        targetCloud = await discoverCloudUrl();
+      }
+
+      if (targetCloud) {
+        try {
+          const cloudBase = targetCloud.replace(/\/+$/, "");
+          const fallbackUrl = `${cloudBase}${path}`;
+          const retryRes = await fetch(fallbackUrl, {
+            method,
+            headers: { "Content-Type": "application/json" },
+            body: body ? JSON.stringify(body) : undefined
+          });
+          if (retryRes.ok) {
+            config.host = targetCloud;
+            localStorage.setItem("pc_remote_host", targetCloud);
+            showToast("🌐 Подключено через интернет (Cloudflare)!");
+            return await retryRes.json();
+          }
+        } catch (e) {}
+      }
+
+      // If stored cloudUrl also failed, force discover fresh URL from GitHub:
+      const freshCloud = await discoverCloudUrl(true);
+      if (freshCloud && freshCloud !== targetCloud) {
+        try {
+          const freshBase = freshCloud.replace(/\/+$/, "");
+          const freshRes = await fetch(`${freshBase}${path}`, {
+            method,
+            headers: { "Content-Type": "application/json" },
+            body: body ? JSON.stringify(body) : undefined
+          });
+          if (freshRes.ok) {
+            config.host = freshCloud;
+            localStorage.setItem("pc_remote_host", freshCloud);
+            showToast("🌐 Найден новый Cloudflare туннель!");
+            return await freshRes.json();
+          }
+        } catch (e2) {}
+      }
     }
     throw err;
   }
@@ -684,6 +743,25 @@ function setupEvents() {
     });
   }
 
+  // Connect via Cloudflare from offline banner
+  const btnConnectCloud = document.getElementById("btnConnectCloud");
+  if (btnConnectCloud) {
+    btnConnectCloud.addEventListener("click", async () => {
+      haptic(30);
+      showToast("🔍 Ищу ПК через Cloudflare...");
+      const url = await discoverCloudUrl(true);
+      if (url) {
+        config.host = url;
+        localStorage.setItem("pc_remote_host", url);
+        showToast("🌐 Найдено! Подключаюсь...");
+        pollStatus();
+        fetchChat(true);
+      } else {
+        showToast("Не удалось обнаружить Cloudflare URL в сети");
+      }
+    });
+  }
+
   // Volume Buttons
   const btnVolDown = document.getElementById("btnVolDown");
   if (btnVolDown) btnVolDown.addEventListener("click", () => triggerAction("volume_down", { steps: 3 }));
@@ -801,6 +879,23 @@ function setupEvents() {
       if (disp && hostInput && disp.value) {
         hostInput.value = disp.value;
         showToast("Cloudflare URL вставлен в поле!");
+      }
+    });
+  }
+
+  const btnAutoDiscover = document.getElementById("btnAutoDiscoverCloud");
+  if (btnAutoDiscover) {
+    btnAutoDiscover.addEventListener("click", async () => {
+      haptic(25);
+      showToast("🔍 Поиск Cloudflare URL на GitHub...");
+      const url = await discoverCloudUrl(true);
+      if (url) {
+        const disp = document.getElementById("cloudUrlDisplay");
+        if (disp) disp.value = url;
+        if (hostInput) hostInput.value = url;
+        showToast("✅ URL найден и вставлен в поле!");
+      } else {
+        showToast("URL не найден в репозитории");
       }
     });
   }
