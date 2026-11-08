@@ -292,8 +292,20 @@ async function fetchChat(autoScroll = true) {
     const res = await apiCall(`/api/antigravity/chat${params}`);
     if (!res || res.status !== "ok") return;
 
-    if (res.conversation_id && !currentConvId) {
-      currentConvId = res.conversation_id;
+    if (currentConvId === "new") {
+      if (res.conversation_id && res.conversation_id !== "new") {
+        currentConvId = res.conversation_id;
+        loadConversations();
+      } else {
+        if (emptyState) emptyState.style.display = "flex";
+        feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
+        lastMessageCount = 0;
+        return;
+      }
+    } else if (res.conversation_id && !currentConvId) {
+      if (res.conversation_id !== "new") {
+        currentConvId = res.conversation_id;
+      }
     }
 
     // Update Agent Live Status
@@ -429,17 +441,25 @@ async function sendPrompt() {
   }
 
   try {
+    const isNew = (currentConvId === "new");
     const res = await apiCall("/api/antigravity/send", "POST", {
       text: text,
       focus: chkFocus ? chkFocus.checked : false,
-      conversation_id: currentConvId || null
+      conversation_id: isNew ? "new" : (currentConvId || null)
     });
 
     if (res.status === "ok") {
       showToast("✨ Запрос отправлен в IDE!");
-      // Rapid poll to catch thinking & responses
-      for (let i = 1; i <= 6; i++) {
-        setTimeout(() => fetchChat(true), i * 800);
+      if (isNew) {
+        setTimeout(async () => {
+          currentConvId = "";
+          await loadConversations();
+          fetchChat(true);
+        }, 2200);
+      } else {
+        for (let i = 1; i <= 6; i++) {
+          setTimeout(() => fetchChat(true), i * 800);
+        }
       }
     } else {
       showToast("Ошибка: " + (res.message || "Не удалось отправить"));
@@ -460,7 +480,7 @@ async function loadConversations() {
     const res = await apiCall("/api/antigravity/conversations");
     if (!res || !res.conversations || res.conversations.length === 0) return;
 
-    const currentVal = select.value || currentConvId;
+    const currentVal = currentConvId || select.value;
     const items = res.conversations;
 
     select.innerHTML = "";
@@ -471,11 +491,22 @@ async function loadConversations() {
     optCurrent.textContent = "● Текущий активный чат";
     select.appendChild(optCurrent);
 
+    // New conversation option
+    const optNew = document.createElement("option");
+    optNew.value = "new";
+    optNew.textContent = "✨ + Новый диалог...";
+    if (currentVal === "new") {
+      optNew.selected = true;
+    }
+    select.appendChild(optNew);
+
     items.forEach(c => {
       const opt = document.createElement("option");
       opt.value = c.id;
       opt.textContent = c.title + (c.isCurrent ? " (активен)" : "");
-      if (c.isCurrent && !currentVal) {
+      if (currentVal === "new") {
+        // Do not select any past conversation if in new conversation mode
+      } else if (c.isCurrent && !currentVal) {
         opt.selected = true;
         currentConvId = c.id;
       } else if (currentVal === c.id) {
@@ -757,6 +788,22 @@ function setupEvents() {
     convSelect.addEventListener("change", async () => {
       haptic(20);
       const val = convSelect.value;
+      if (val === "new") {
+        currentConvId = "new";
+        lastMessageCount = 0;
+        const feed = document.getElementById("chatFeed");
+        const emptyState = document.getElementById("chatEmptyState");
+        if (feed) feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
+        if (emptyState) emptyState.style.display = "flex";
+        showToast("Создаю новый диалог в IDE...");
+        try {
+          await apiCall("/api/antigravity/conversation/new", "POST");
+          showToast("✨ Новый диалог готов к сообщениям!");
+        } catch (e) {
+          showToast("Ошибка создания чата");
+        }
+        return;
+      }
       currentConvId = val;
       isSwitchingConv = true;
       lastMessageCount = 0;
@@ -780,16 +827,23 @@ function setupEvents() {
     btnNewChat.addEventListener("click", async () => {
       haptic(30);
       isSwitchingConv = true;
+      currentConvId = "new";
       lastMessageCount = 0;
-      currentConvId = "";
+
+      // Instantly clear feed and show empty state
+      const feed = document.getElementById("chatFeed");
+      const emptyState = document.getElementById("chatEmptyState");
+      if (feed) feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
+      if (emptyState) emptyState.style.display = "flex";
+
+      const convSelect = document.getElementById("conversationSelect");
+      if (convSelect) convSelect.value = "new";
+
       showToast("Создаю новый диалог в IDE...");
       try {
         await apiCall("/api/antigravity/conversation/new", "POST");
-        showToast("✨ Новый диалог создан!");
-        setTimeout(() => {
-          loadConversations();
-          fetchChat(true);
-        }, 1200);
+        showToast("✨ Новый диалог готов к сообщениям!");
+        loadConversations();
       } catch (e) {
         showToast("Ошибка создания чата");
       } finally {

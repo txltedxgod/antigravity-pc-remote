@@ -207,12 +207,15 @@ async def create_new_conversation(port=None):
             async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=4.0)) as ws:
                 js = """
                 (() => {
-                    const btn = document.querySelector('button[aria-label="New Conversation"]');
+                    const btn = document.querySelector('[data-testid="new-conversation-button"]') ||
+                                document.querySelector('a[href="/"]') ||
+                                Array.from(document.querySelectorAll('a, button')).find(x => x.textContent.trim() === 'New Conversation');
                     if (btn) {
                         btn.click();
                         return { success: true, method: 'btn_click' };
                     } else {
-                        window.location.href = '/';
+                        const search = window.location.search || '';
+                        window.location.href = '/' + search;
                         return { success: true, method: 'root_nav' };
                     }
                 })()
@@ -223,7 +226,7 @@ async def create_new_conversation(port=None):
                     "params": {"expression": js, "returnByValue": True}
                 }))
                 reply = await ws.receive_json()
-                await asyncio.sleep(1.2)
+                await asyncio.sleep(1.0)
                 return {"status": "ok", "message": "New conversation initiated"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -279,6 +282,9 @@ async def get_active_conversation_id(port=None):
                 parts = url.split("/c/")[1].split("?")[0].strip("/")
                 if parts:
                     return parts
+            else:
+                # Active page in Antigravity has no /c/ -> explicitly in new blank conversation
+                return "new"
     except Exception:
         pass
 
@@ -440,12 +446,11 @@ async def get_conversation_chat(conv_id=None, limit=50, port=None):
     """Asynchronously retrieves chat messages and real-time status for the conversation."""
     if not conv_id or conv_id == "active":
         conv_id = await get_active_conversation_id(port)
-    if not conv_id:
+    if not conv_id or conv_id == "new":
         return {
-            "status": "error",
-            "message": "No active conversation found",
-            "conversation_id": None,
-            "agent_status": "offline",
+            "status": "ok",
+            "conversation_id": "new",
+            "agent_status": "idle",
             "current_action": "",
             "messages": []
         }
