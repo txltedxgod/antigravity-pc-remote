@@ -216,55 +216,75 @@ def launch_application(app_key):
     """Launches targeted applications quickly."""
     app_key = (app_key or "").strip().lower()
 
-    if app_key == "steamghost":
-        exe = os.path.expandvars(r"%LOCALAPPDATA%\Programs\SteamGhost\SteamGhost.App.exe")
-        if os.path.exists(exe):
-            subprocess.Popen([exe], cwd=os.path.dirname(exe), shell=True)
-            return {"status": "ok", "message": "SteamGhost launched"}
+    if app_key in ("steamghost", "ghost", "idler", "накрутка", "часы", "hourboost", "фарм"):
         desktop_exe = r"C:\Users\dev\Desktop\SteamGhost.exe"
         if os.path.exists(desktop_exe):
-            subprocess.Popen([desktop_exe], shell=True)
+            run_interactive(r'"C:\Users\dev\Desktop\SteamGhost.exe"')
             return {"status": "ok", "message": "SteamGhost launched via Desktop"}
+        exe = os.path.expandvars(r"%LOCALAPPDATA%\Programs\SteamGhost\SteamGhost.App.exe")
+        if os.path.exists(exe):
+            run_interactive(f'"{exe}"')
+            return {"status": "ok", "message": "SteamGhost launched"}
         return {"status": "error", "message": "SteamGhost executable not found"}
 
     elif app_key == "steam":
-        run_interactive("start steam://open/main")
+        run_interactive('start "" "steam://open/main"')
         return {"status": "ok", "message": "Steam client launched"}
 
     elif app_key in ("cs2", "cs", "730"):
-        run_interactive("start steam://run/730")
+        desktop_url = r"C:\Users\dev\Desktop\Counter-Strike 2.url"
+        if os.path.exists(desktop_url):
+            run_interactive(r'start "" "C:\Users\dev\Desktop\Counter-Strike 2.url"')
+        else:
+            run_interactive('start "" "steam://rungameid/730"')
         return {"status": "ok", "message": "CS2 launched via Steam"}
 
     elif app_key in ("dota2", "dota", "570"):
-        run_interactive("start steam://run/570")
+        desktop_url = r"C:\Users\dev\Desktop\Dota 2.url"
+        if os.path.exists(desktop_url):
+            run_interactive(r'start "" "C:\Users\dev\Desktop\Dota 2.url"')
+        else:
+            run_interactive('start "" "steam://rungameid/570"')
         return {"status": "ok", "message": "Dota 2 launched via Steam"}
 
     elif app_key in ("taxilife", "taxi", "1351410"):
-        run_interactive("start steam://run/1351410")
+        desktop_url = r"C:\Users\dev\Desktop\Taxi Life A City Driving Simulator.url"
+        if os.path.exists(desktop_url):
+            run_interactive(r'start "" "C:\Users\dev\Desktop\Taxi Life A City Driving Simulator.url"')
+        else:
+            run_interactive('start "" "steam://rungameid/1351410"')
         return {"status": "ok", "message": "Taxi Life launched via Steam"}
 
     elif app_key in ("rust", "252490"):
-        run_interactive("start steam://run/252490")
+        run_interactive('start "" "steam://rungameid/252490"')
         return {"status": "ok", "message": "Rust launched via Steam"}
 
     elif app_key in ("banana", "292330"):
-        run_interactive("start steam://run/292330")
+        run_interactive('start "" "steam://rungameid/292330"')
         return {"status": "ok", "message": "Banana launched via Steam"}
 
     elif app_key in ("tf2", "440"):
-        run_interactive("start steam://run/440")
+        run_interactive('start "" "steam://rungameid/440"')
         return {"status": "ok", "message": "Team Fortress 2 launched via Steam"}
 
     elif app_key in ("wallpaper", "wallpaperengine", "431960"):
-        run_interactive("start steam://run/431960")
+        run_interactive('start "" "steam://rungameid/431960"')
         return {"status": "ok", "message": "Wallpaper Engine launched"}
 
     elif app_key.isdigit():
-        run_interactive(f"start steam://run/{app_key}")
+        run_interactive(f'start "" "steam://rungameid/{app_key}"')
         return {"status": "ok", "message": f"Steam game {app_key} launched"}
 
-    elif app_key == "telegram":
-        run_interactive("start tg://")
+    elif app_key in ("discord", "дс"):
+        desktop_lnk = r"C:\Users\dev\Desktop\Discord.lnk"
+        if os.path.exists(desktop_lnk):
+            run_interactive(r'start "" "C:\Users\dev\Desktop\Discord.lnk"')
+        else:
+            run_interactive("start discord")
+        return {"status": "ok", "message": "Discord launched"}
+
+    elif app_key in ("telegram", "тг"):
+        run_interactive('start "" "tg://"')
         return {"status": "ok", "message": "Telegram launched"}
 
     elif app_key == "chrome":
@@ -302,6 +322,10 @@ def kill_application(app_key):
         "chrome": "chrome.exe",
         "telegram": "Telegram.exe",
     }
+    if app_key in ("steamghost", "ghost", "idler", "накрутка"):
+        subprocess.run("taskkill /F /IM SteamGhost.exe /IM SteamGhost.App.exe", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return {"status": "ok", "message": "SteamGhost terminated"}
+
     target = mapping.get(app_key, f"{app_key}.exe" if not app_key.endswith(".exe") else app_key)
     try:
         subprocess.run(f"taskkill /F /IM {target}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
