@@ -3,19 +3,36 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>PC Remote & Antigravity</title>
+  <title>Antigravity PC Remote</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <!-- Status Header -->
+  <!-- Header -->
   <header class="app-header">
-    <div class="header-left">
-      <div class="connection-badge" id="connBadge">
-        <span class="status-dot"></span>
-        <span class="conn-text" id="connText">Подключение...</span>
+    <div class="header-brand">
+      <div class="brand-logo">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+          <polygon points="12 2 22 20 2 20" stroke="url(#cyanVioletGrad)" stroke-width="2.5" stroke-linejoin="round"/>
+          <circle cx="12" cy="14" r="2.5" fill="#00F2FE"/>
+          <defs>
+            <linearGradient id="cyanVioletGrad" x1="2" y1="2" x2="22" y2="20" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#00F2FE"/>
+              <stop offset="1" stop-color="#8B5CF6"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <div class="brand-info">
+        <span class="brand-title">Antigravity</span>
+        <span class="brand-badge">REMOTE</span>
       </div>
     </div>
-    <div class="header-right">
+
+    <div class="header-actions">
+      <div class="connection-pill" id="connBadge">
+        <span class="status-dot"></span>
+        <span class="conn-text" id="connText">Поиск ПК...</span>
+      </div>
       <button class="icon-btn" id="btnSettings" title="Настройки IP" aria-label="Настройки">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"></circle>
@@ -25,103 +42,131 @@
     </div>
   </header>
 
-  <!-- Main Content Tabs Container -->
+  <!-- Main Container -->
   <main class="content-container">
     
-    <!-- TAB 1: Antigravity AI -->
+    <!-- TAB 1: Antigravity AI Chat -->
     <section class="tab-pane active" id="tabAntigravity">
-      <!-- Offline / Sleeping PC Card -->
-      <div class="card offline-card" id="offlineCard" style="display: none;">
-        <div class="card-row">
-          <div class="indicator-group">
-            <span class="pulse-indicator pulse-offline"></span>
-            <div class="indicator-texts">
-              <span class="card-subtitle">ПК спит или офлайн</span>
-              <div class="card-title-truncate">Нажми, чтобы включить по сети</div>
-            </div>
+      <!-- Offline Banner -->
+      <div class="offline-banner" id="offlineCard" style="display: none;">
+        <div class="banner-content">
+          <div class="pulse-ring pulse-offline"></div>
+          <div class="banner-texts">
+            <span class="banner-title">ПК не отвечает на запросы</span>
+            <span class="banner-desc">Компьютер спит или выключен</span>
           </div>
         </div>
-        <button class="btn btn-primary" id="btnWakeOnLan">
-          <span>⚡ Разбудить ПК (Wake-on-LAN)</span>
+        <button class="btn btn-wake" id="btnWakeOnLan">
+          <span>⚡ Разбудить (WoL)</span>
         </button>
       </div>
 
-      <div class="card status-card">
-        <div class="card-row">
-          <div class="indicator-group" style="flex: 1; min-width: 0;">
-            <span class="pulse-indicator" id="agIndicator"></span>
-            <div class="indicator-texts" style="flex: 1; min-width: 0;">
-              <div class="conv-header-row">
-                <span class="card-subtitle">Чат в Antigravity:</span>
-                <span class="tag-badge" id="agTagBadge">CDP</span>
-              </div>
-              <select id="conversationSelect" class="conversation-dropdown">
-                <option value="">Загрузка диалогов...</option>
-              </select>
-            </div>
-          </div>
-          <button class="btn btn-primary btn-sm" id="btnNewChat" title="Создать новый чат" style="margin-left: 8px; flex-shrink: 0; padding: 6px 10px;">
-            <span>+ Новый</span>
-          </button>
+      <!-- Top Chat Controls Bar -->
+      <div class="chat-header-bar">
+        <div class="conv-select-wrapper">
+          <select id="conversationSelect" class="conversation-select">
+            <option value="">Загрузка диалогов...</option>
+          </select>
         </div>
-      </div>
-
-      <div class="prompt-box-card">
-        <label for="promptInput" class="section-label">Отправить сообщение в IDE:</label>
-        <textarea id="promptInput" rows="4" placeholder="Напиши запрос агенту прямо в Antigravity..."></textarea>
-        
-        <div class="prompt-actions">
-          <label class="checkbox-label">
-            <input type="checkbox" id="chkFocusWindow">
-            <span>Фокус окна ПК</span>
-          </label>
-          <button class="btn btn-primary" id="btnSendPrompt">
-            <span>Отправить в IDE</span>
+        <div class="chat-header-right">
+          <div class="agent-live-pill" id="agentStatusPill" title="Статус агента">
+            <span class="pill-dot" id="agentStatusDot"></span>
+            <span class="pill-label" id="agentStatusLabel">Онлайн</span>
+          </div>
+          <button class="btn-icon-square" id="btnNewChat" title="Создать новый диалог">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="22" y1="2" x2="11" y2="13"></line>
-              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
             </svg>
           </button>
         </div>
       </div>
 
-      <div class="quick-chips-section">
-        <span class="section-label">Быстрые команды:</span>
-        <div class="chips-container">
+      <!-- Real-time Chat Feed -->
+      <div class="chat-feed" id="chatFeed">
+        <div class="chat-empty" id="chatEmptyState">
+          <div class="empty-icon-glow">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+              <polygon points="12 2 22 20 2 20" stroke="#00F2FE" stroke-width="2" stroke-linejoin="round"/>
+              <circle cx="12" cy="14" r="2" fill="#8B5CF6"/>
+            </svg>
+          </div>
+          <div class="empty-title">Диалог с Antigravity</div>
+          <div class="empty-desc">Задай любой вопрос или отправь команду ПК. Ответ агента появится здесь в реальном времени.</div>
+        </div>
+      </div>
+
+      <!-- Live Activity Bar (Shown when Agent is Thinking / Working) -->
+      <div class="agent-activity-banner" id="agentActivityBanner" style="display: none;">
+        <div class="activity-spinner">
+          <span class="dot d1"></span>
+          <span class="dot d2"></span>
+          <span class="dot d3"></span>
+        </div>
+        <span class="activity-text" id="agentActivityText">Агент обрабатывает запрос...</span>
+      </div>
+
+      <!-- Docked Bottom Input Area -->
+      <div class="chat-input-dock">
+        <!-- Quick Chips Carousel -->
+        <div class="chips-carousel">
           <button class="chip" data-prompt="Каков текущий статус задач?">📊 Статус задач</button>
-          <button class="chip" data-prompt="Запусти автоматические тесты">🧪 Запуск тестов</button>
-          <button class="chip" data-prompt="Запусти SteamGhost и начни фарм">👻 Запусти SteamGhost</button>
-          <button class="chip" data-prompt="Сделай коммит и отправь изменения">📦 Коммит и пуш</button>
+          <button class="chip" data-prompt="Запусти автоматические тесты">🧪 Тесты</button>
+          <button class="chip" data-prompt="Запусти SteamGhost и начни фарм">👻 SteamGhost</button>
           <button class="chip" data-prompt="Заблокируй компьютер">🔒 Заблокируй ПК</button>
+          <button class="chip" data-prompt="Сделай коммит и отправь изменения">📦 Коммит и пуш</button>
+        </div>
+
+        <!-- Input Box -->
+        <div class="input-composer">
+          <textarea id="promptInput" rows="1" placeholder="Запрос для Antigravity..." autocomplete="off"></textarea>
+          <div class="composer-controls">
+            <label class="toggle-switch-label" title="Фокусировать окно Antigravity на ПК">
+              <input type="checkbox" id="chkFocusWindow">
+              <span class="toggle-slider"></span>
+              <span class="toggle-caption">Фокус</span>
+            </label>
+            <button class="btn-send-dock" id="btnSendPrompt" title="Отправить сообщение">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- TAB 2: Quick PC Controls -->
+    <!-- TAB 2: PC Controls -->
     <section class="tab-pane" id="tabControls">
-      <!-- Volume Section -->
-      <div class="card">
-        <div class="card-header-simple">
-          <span class="section-label">Громкость системы</span>
-          <span class="volume-hint" id="volHint">Регулировка</span>
+      <!-- Volume Card -->
+      <div class="glass-card">
+        <div class="card-title-row">
+          <div class="card-title-icon volume-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+            </svg>
+          </div>
+          <span class="card-heading">Громкость системы</span>
         </div>
         <div class="btn-grid-3">
-          <button class="btn btn-secondary" id="btnVolDown">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <button class="tactile-btn" id="btnVolDown">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
             </svg>
             <span>-5%</span>
           </button>
-          <button class="btn btn-secondary" id="btnVolMute">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <button class="tactile-btn tactile-mute" id="btnVolMute">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
               <line x1="23" y1="9" x2="17" y2="15"></line>
               <line x1="17" y1="9" x2="23" y2="15"></line>
             </svg>
             <span>Mute</span>
           </button>
-          <button class="btn btn-secondary" id="btnVolUp">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <button class="tactile-btn" id="btnVolUp">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
               <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
             </svg>
@@ -130,58 +175,67 @@
         </div>
       </div>
 
-      <!-- Media Section -->
-      <div class="card">
-        <div class="card-header-simple">
-          <span class="section-label">Управление медиа</span>
+      <!-- Media Control Card -->
+      <div class="glass-card">
+        <div class="card-title-row">
+          <div class="card-title-icon media-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            </svg>
+          </div>
+          <span class="card-heading">Управление медиа</span>
         </div>
-        <div class="btn-grid-3">
-          <button class="btn btn-secondary" id="btnMediaPrev">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <div class="media-deck">
+          <button class="media-btn-step" id="btnMediaPrev" title="Предыдущий трек">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
               <polygon points="19 20 9 12 19 4 19 20"></polygon>
               <line x1="5" y1="19" x2="5" y2="5"></line>
             </svg>
-            <span>Назад</span>
           </button>
-          <button class="btn btn-accent" id="btnMediaPlay">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <button class="media-btn-play" id="btnMediaPlay" title="Play / Pause">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
               <polygon points="5 3 19 12 5 21 5 3"></polygon>
             </svg>
-            <span>Play/Pause</span>
           </button>
-          <button class="btn btn-secondary" id="btnMediaNext">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <button class="media-btn-step" id="btnMediaNext" title="Следующий трек">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
               <polygon points="5 4 15 12 5 20 5 4"></polygon>
               <line x1="19" y1="5" x2="19" y2="19"></line>
             </svg>
-            <span>Вперед</span>
           </button>
         </div>
       </div>
 
-      <!-- System Power & Lock -->
-      <div class="card">
-        <div class="card-header-simple">
-          <span class="section-label">Система и экран</span>
+      <!-- System & Screen -->
+      <div class="glass-card">
+        <div class="card-title-row">
+          <div class="card-title-icon system-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+              <line x1="8" y1="21" x2="16" y2="21"></line>
+              <line x1="12" y1="17" x2="12" y2="21"></line>
+            </svg>
+          </div>
+          <span class="card-heading">Экран и безопасность</span>
         </div>
         <div class="btn-grid-3">
-          <button class="btn btn-warning" id="btnLockPc">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <button class="tactile-btn tactile-warn" id="btnLockPc">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
               <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
             </svg>
             <span>Блок ПК</span>
           </button>
-          <button class="btn btn-secondary" id="btnScreenOff">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <button class="tactile-btn" id="btnScreenOff">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
               <line x1="8" y1="21" x2="16" y2="21"></line>
               <line x1="12" y1="17" x2="12" y2="21"></line>
             </svg>
             <span>Экран выкл</span>
           </button>
-          <button class="btn btn-secondary" id="btnSleepPc">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <button class="tactile-btn tactile-danger" id="btnSleepPc">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
             </svg>
             <span>Сон</span>
@@ -192,51 +246,59 @@
 
     <!-- TAB 3: App Launchers -->
     <section class="tab-pane" id="tabApps">
-      <div class="card">
-        <div class="card-header-simple">
-          <span class="section-label">Быстрый запуск на ПК</span>
+      <div class="glass-card">
+        <div class="card-title-row">
+          <div class="card-title-icon apps-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="7" height="7"></rect>
+              <rect x="14" y="3" width="7" height="7"></rect>
+              <rect x="14" y="14" width="7" height="7"></rect>
+              <rect x="3" y="14" width="7" height="7"></rect>
+            </svg>
+          </div>
+          <span class="card-heading">Быстрый запуск на ПК</span>
         </div>
         <div class="apps-grid">
-          <button class="app-card" data-app="steamghost">
-            <div class="app-icon ghost-icon">👻</div>
-            <div class="app-info">
+          <button class="app-card highlight-ghost" data-app="steamghost">
+            <div class="app-icon-badge">👻</div>
+            <div class="app-details">
               <span class="app-name">SteamGhost</span>
-              <span class="app-desc">Фоновый idle игр</span>
+              <span class="app-desc" id="ghostStatusDesc">Фоновый idle игр</span>
             </div>
           </button>
           <button class="app-card" data-app="steam">
-            <div class="app-icon">🎮</div>
-            <div class="app-info">
+            <div class="app-icon-badge">🎮</div>
+            <div class="app-details">
               <span class="app-name">Steam</span>
-              <span class="app-desc">Основной клиент</span>
+              <span class="app-desc">Игровой клиент</span>
             </div>
           </button>
           <button class="app-card" data-app="telegram">
-            <div class="app-icon">💬</div>
-            <div class="app-info">
+            <div class="app-icon-badge">💬</div>
+            <div class="app-details">
               <span class="app-name">Telegram</span>
               <span class="app-desc">Мессенджер</span>
             </div>
           </button>
           <button class="app-card" data-app="chrome">
-            <div class="app-icon">🌐</div>
-            <div class="app-info">
+            <div class="app-icon-badge">🌐</div>
+            <div class="app-details">
               <span class="app-name">Chrome</span>
               <span class="app-desc">Браузер</span>
             </div>
           </button>
           <button class="app-card" data-app="taskmgr">
-            <div class="app-icon">⚙️</div>
-            <div class="app-info">
+            <div class="app-icon-badge">⚙️</div>
+            <div class="app-details">
               <span class="app-name">Диспетчер</span>
               <span class="app-desc">Task Manager</span>
             </div>
           </button>
           <button class="app-card" data-app="explorer">
-            <div class="app-icon">📁</div>
-            <div class="app-info">
+            <div class="app-icon-badge">📁</div>
+            <div class="app-details">
               <span class="app-name">Проводник</span>
-              <span class="app-desc">Мой компьютер</span>
+              <span class="app-desc">Файлы Windows</span>
             </div>
           </button>
         </div>
@@ -246,37 +308,48 @@
     <!-- TAB 4: PC Monitor & Clipboard -->
     <section class="tab-pane" id="tabMonitor">
       <div class="telemetry-grid">
-        <div class="card stat-card">
-          <span class="stat-label">Загрузка CPU</span>
-          <div class="stat-value" id="cpuStat">0%</div>
-          <div class="progress-bar">
-            <div class="progress-fill" id="cpuFill" style="width: 0%"></div>
+        <div class="glass-card stat-tile">
+          <div class="stat-top">
+            <span class="stat-label">ЗАГРУЗКА CPU</span>
+            <span class="stat-val" id="cpuStat">0%</span>
+          </div>
+          <div class="gauge-bar">
+            <div class="gauge-fill" id="cpuFill" style="width: 0%"></div>
           </div>
         </div>
-        <div class="card stat-card">
-          <span class="stat-label">ОЗУ (RAM)</span>
-          <div class="stat-value" id="ramStat">0 / 0 ГБ</div>
-          <div class="progress-bar">
-            <div class="progress-fill" id="ramFill" style="width: 0%"></div>
+        <div class="glass-card stat-tile">
+          <div class="stat-top">
+            <span class="stat-label">ОЗУ (RAM)</span>
+            <span class="stat-val" id="ramStat">0 / 0 ГБ</span>
+          </div>
+          <div class="gauge-bar">
+            <div class="gauge-fill gauge-ram" id="ramFill" style="width: 0%"></div>
           </div>
         </div>
       </div>
 
-      <div class="card">
-        <span class="section-label">Активное окно на ПК:</span>
-        <div class="active-window-title" id="activeWindowTitle">—</div>
+      <div class="glass-card">
+        <div class="card-title-row">
+          <span class="card-heading-sm">Активное окно на мониторе:</span>
+        </div>
+        <div class="active-win-pill" id="activeWindowTitle">—</div>
       </div>
 
       <!-- Clipboard Bridge -->
-      <div class="card">
-        <div class="card-header-simple">
-          <span class="section-label">Буфер обмена ПК (Clipboard)</span>
-          <button class="chip chip-sm" id="btnRefreshClip">Обновить</button>
+      <div class="glass-card">
+        <div class="card-title-row space-between">
+          <span class="card-heading-sm">Буфер обмена ПК (Clipboard)</span>
+          <button class="chip-action" id="btnRefreshClip">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+            <span>Обновить</span>
+          </button>
         </div>
-        <div class="clipboard-box" id="pcClipboardView">Нажмите «Обновить» для чтения буфера ПК</div>
-        <div class="clipboard-send-row">
-          <input type="text" id="clipInput" placeholder="Текст для отправки в буфер ПК...">
-          <button class="btn btn-secondary btn-sm" id="btnSendClip">Отправить</button>
+        <div class="clipboard-display" id="pcClipboardView">Нажмите «Обновить» для чтения буфера ПК</div>
+        <div class="clipboard-input-row">
+          <input type="text" id="clipInput" placeholder="Текст для буфера ПК...">
+          <button class="btn btn-secondary-compact" id="btnSendClip">Отправить</button>
         </div>
       </div>
     </section>
@@ -286,54 +359,63 @@
   <!-- Bottom Navigation Bar -->
   <nav class="bottom-nav">
     <button class="nav-item active" data-tab="tabAntigravity">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2 2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"></path>
-        <rect x="3" y="8" width="18" height="12" rx="3"></rect>
-        <circle cx="8" cy="14" r="1.5"></circle>
-        <circle cx="16" cy="14" r="1.5"></circle>
-      </svg>
+      <div class="nav-icon-wrapper">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 22 20 2 20"></polygon>
+          <circle cx="12" cy="14" r="2" fill="currentColor"></circle>
+        </svg>
+      </div>
       <span>Агент</span>
     </button>
     <button class="nav-item" data-tab="tabControls">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="3"></circle>
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-      </svg>
+      <div class="nav-icon-wrapper">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </div>
       <span>Пульт</span>
     </button>
     <button class="nav-item" data-tab="tabApps">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="3" y="3" width="7" height="7"></rect>
-        <rect x="14" y="3" width="7" height="7"></rect>
-        <rect x="14" y="14" width="7" height="7"></rect>
-        <rect x="3" y="14" width="7" height="7"></rect>
-      </svg>
+      <div class="nav-icon-wrapper">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="7" height="7"></rect>
+          <rect x="14" y="3" width="7" height="7"></rect>
+          <rect x="14" y="14" width="7" height="7"></rect>
+          <rect x="3" y="14" width="7" height="7"></rect>
+        </svg>
+      </div>
       <span>Запуск</span>
     </button>
     <button class="nav-item" data-tab="tabMonitor">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-      </svg>
+      <div class="nav-icon-wrapper">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+        </svg>
+      </div>
       <span>Монитор</span>
     </button>
   </nav>
 
-  <!-- Settings Modal for Server IP -->
+  <!-- Settings Modal -->
   <div class="modal-backdrop" id="settingsModal">
     <div class="modal-card">
-      <h3 class="modal-title">Настройки подключения к ПК</h3>
-      <p class="modal-desc">Укажи локальный IP и порт сервера на ПК:</p>
+      <div class="modal-header">
+        <h3 class="modal-title">Подключение к ПК</h3>
+        <span class="modal-tag">LAN BRIDGE</span>
+      </div>
+      <p class="modal-desc">Укажи локальный IP и порт сервера на компьютере:</p>
       
-      <div class="input-group">
-        <label for="serverHostInput">IP-адрес ПК:</label>
+      <div class="input-field-group">
+        <label for="serverHostInput">IP-адрес ПК в сети Wi-Fi:</label>
         <input type="text" id="serverHostInput" placeholder="10.0.0.85">
       </div>
-      <div class="input-group">
-        <label for="serverPortInput">Порт:</label>
+      <div class="input-field-group">
+        <label for="serverPortInput">Порт HTTP:</label>
         <input type="number" id="serverPortInput" placeholder="8765">
       </div>
 
-      <div class="modal-actions">
+      <div class="modal-btn-row">
         <button class="btn btn-secondary" id="btnCancelSettings">Отмена</button>
         <button class="btn btn-primary" id="btnSaveSettings">Сохранить</button>
       </div>

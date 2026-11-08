@@ -10,6 +10,8 @@ import json
 import logging
 import ctypes
 import os
+import re
+from pathlib import Path
 from ctypes import wintypes
 
 logger = logging.getLogger("AntigravityBridge")
@@ -20,6 +22,7 @@ kernel32 = ctypes.windll.kernel32
 DEFAULT_CDP_PORT = 60382
 ANTIGRAVITY_EXE = r"C:\Users\dev\AppData\Local\Programs\antigravity\Antigravity.exe"
 DEVTOOLS_PORT_FILE = os.path.expandvars(r"%APPDATA%\Antigravity\DevToolsActivePort")
+BRAIN_DIR = Path(os.path.expandvars(r"%USERPROFILE%\.gemini\antigravity\brain"))
 
 def get_active_cdp_port(fallback=DEFAULT_CDP_PORT):
     """Dynamically retrieves the active DevTools port from Electron's DevToolsActivePort file."""
@@ -241,6 +244,212 @@ async def get_antigravity_status(port=None):
         "url": target.get("url", ""),
         "id": target.get("id", "")
     }
+
+def clean_user_text(raw):
+    """Cleans internal XML markup from user requests for mobile display."""
+    if not raw:
+        return ""
+    if isinstance(raw, list):
+        parts = []
+        for p in raw:
+            if isinstance(p, dict) and "text" in p:
+                parts.append(p["text"])
+        raw = " ".join(parts)
+
+    if not isinstance(raw, str):
+        return str(raw)
+
+    m = re.search(r"<USER_REQUEST>(.*?)</USER_REQUEST>", raw, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+
+    if raw.startswith("<CONTEXT_SUMMARY>") or raw.startswith("<system>") or "<identity>" in raw:
+        return ""
+
+    cleaned = re.sub(r"<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>", "", raw, flags=re.DOTALL)
+    return cleaned.strip()
+
+async def get_active_conversation_id(port=None):
+    """Detects active conversation ID via CDP target URL or latest modified directory in brain."""
+    try:
+        target = await find_antigravity_target(port)
+        if target:
+            url = target.get("url", "")
+            if "/c/" in url:
+                parts = url.split("/c/")[1].split("?")[0].strip("/")
+                if parts:
+                    return parts
+    except Exception:
+        pass
+
+    try:
+        if BRAIN_DIR.exists():
+            dirs = [d for d in BRAIN_DIR.iterdir() if d.is_dir()]
+            def get_mtime(p):
+                t = p / ".system_generated" / "logs" / "transcript.jsonl"
+                if t.exists():
+                    return t.stat().st_mtime
+                return p.stat().st_mtime
+            dirs.sort(key=get_mtime, reverse=True)
+            for d in dirs:
+                if (d / ".system_generated" / "logs" / "transcript.jsonl").exists():
+                    return d.name
+    except Exception:
+        pass
+    return None
+
+def parse_conversation_history(conv_id, limit=50):
+    """Parses transcript.jsonl into clean user/assistant messages and live agent status."""
+    logs_dir = BRAIN_DIR / conv_id / ".system_generated" / "logs"
+    compact_path = logs_dir / "transcript.jsonl"
+    full_path = logs_dir / "transcript_full.jsonl"
+
+    if not compact_path.exists():
+        return {
+            "status": "error",
+            "message": f"Conversation logs not found for {conv_id}",
+            "conversation_id": conv_id,
+            "agent_status": "unknown",
+            "current_action": "",
+            "messages": []
+        }
+
+    try:
+        with open(compact_path, "r", encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+        
+        recent_lines = all_lines[-500:] if len(all_lines) > 500 else all_lines
+        start_index = len(all_lines) - len(recent_lines)
+
+        parsed_steps = []
+        for line in recent_lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed_steps.append(json.loads(line))
+            except Exception:
+                continue
+
+        full_cache = {}
+        def get_full_step(idx):
+            if idx in full_cache:
+                return full_cache[idx]
+            if not full_path.exists():
+                return None
+            try:
+                with open(full_path, "r", encoding="utf-8", errors="replace") as ff:
+                    for line_idx, line in enumerate(ff):
+                        if line_idx == idx:
+                            obj = json.loads(line.strip())
+                            full_cache[idx] = obj
+                            return obj
+            except Exception:
+                pass
+            return None
+
+        messages = []
+        agent_status = "idle"
+        current_action = ""
+
+        for i, step in enumerate(parsed_steps):
+            abs_index = start_index + i
+            step_type = step.get("type")
+            trunc = step.get("truncated_fields", [])
+
+            if step_type == "USER_INPUT":
+                raw_content = step.get("content", "")
+                if "content" in trunc:
+                    fstep = get_full_step(abs_index)
+                    if fstep:
+                        raw_content = fstep.get("content", raw_content)
+                
+                clean_text = clean_user_text(raw_content)
+                if clean_text:
+                    messages.append({
+                        "id": f"msg_u_{abs_index}",
+                        "role": "user",
+                        "text": clean_text,
+                        "created_at": step.get("created_at", "")
+                    })
+
+            elif step_type == "PLANNER_RESPONSE":
+                content = step.get("content", "")
+                if "content" in trunc:
+                    fstep = get_full_step(abs_index)
+                    if fstep:
+                        content = fstep.get("content", content)
+
+                tool_calls = step.get("tool_calls", [])
+                if content and content.strip():
+                    messages.append({
+                        "id": f"msg_a_{abs_index}",
+                        "role": "assistant",
+                        "text": content.strip(),
+                        "created_at": step.get("created_at", "")
+                    })
+                    agent_status = "idle"
+                    current_action = ""
+                elif tool_calls:
+                    tool = tool_calls[0]
+                    summary = tool.get("args", {}).get("toolSummary", tool.get("name", "Команда"))
+                    agent_status = "executing"
+                    current_action = summary
+                elif step.get("thinking"):
+                    agent_status = "thinking"
+                    current_action = "Размышляет..."
+
+        if parsed_steps:
+            last = parsed_steps[-1]
+            ltype = last.get("type")
+            if ltype == "PLANNER_RESPONSE" and not last.get("content"):
+                if last.get("tool_calls"):
+                    agent_status = "executing"
+                    tool = last["tool_calls"][0]
+                    current_action = tool.get("args", {}).get("toolSummary", tool.get("name", "Команда"))
+                else:
+                    agent_status = "thinking"
+                    current_action = "Размышляет..."
+            elif ltype == "GENERIC":
+                agent_status = "executing"
+                current_action = "Обрабатывает результат..."
+
+        if limit and len(messages) > limit:
+            messages = messages[-limit:]
+
+        return {
+            "status": "ok",
+            "conversation_id": conv_id,
+            "agent_status": agent_status,
+            "current_action": current_action,
+            "total_messages": len(messages),
+            "messages": messages
+        }
+    except Exception as e:
+        logger.error(f"Error parsing transcript: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "message": str(e),
+            "conversation_id": conv_id,
+            "agent_status": "error",
+            "current_action": "",
+            "messages": []
+        }
+
+async def get_conversation_chat(conv_id=None, limit=50, port=None):
+    """Asynchronously retrieves chat messages and real-time status for the conversation."""
+    if not conv_id or conv_id == "active":
+        conv_id = await get_active_conversation_id(port)
+    if not conv_id:
+        return {
+            "status": "error",
+            "message": "No active conversation found",
+            "conversation_id": None,
+            "agent_status": "offline",
+            "current_action": "",
+            "messages": []
+        }
+    return parse_conversation_history(conv_id, limit=limit)
 
 async def send_prompt_to_antigravity(prompt_text, conv_id=None, focus_window=False, port=None):
     """

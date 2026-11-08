@@ -1,8 +1,9 @@
 /**
- * PC Remote & Antigravity - Mobile Client Logic
+ * Antigravity PC Remote 2.0 - Client Application Logic
+ * Real-time AI chat stream, smart agent telemetry, PC hardware controls.
  */
 
-// State
+// Global Configuration & State
 let config = {
   host: localStorage.getItem("pc_remote_host") || (window.location.hostname && window.location.hostname !== "pcremote.local" ? window.location.hostname : "10.0.0.85"),
   port: localStorage.getItem("pc_remote_port") || (window.location.port ? window.location.port : "8765"),
@@ -10,8 +11,16 @@ let config = {
 };
 
 let isConnected = false;
+let activeTab = "tabAntigravity";
+let currentConvId = "";
+let lastMessageCount = 0;
+let isSwitchingConv = false;
+let isSendingPrompt = false;
+
+let chatPollTimer = null;
 let statusPollTimer = null;
 
+// Helpers
 function getApiUrl(path) {
   return `http://${config.host}:${config.port}${path}`;
 }
@@ -27,8 +36,8 @@ function haptic(ms = 20) {
   } catch (e) {}
 }
 
-// Toast notification
-function showToast(message, duration = 2500) {
+// Native or DOM Toast notification
+function showToast(message, duration = 2400) {
   try {
     if (window.AndroidBridge && typeof window.AndroidBridge.showToast === "function") {
       window.AndroidBridge.showToast(message);
@@ -49,7 +58,7 @@ function showToast(message, duration = 2500) {
   }, duration);
 }
 
-// Generic API Request
+// Generic Fetch Wrapper
 async function apiCall(path, method = "GET", body = null) {
   const url = getApiUrl(path);
   const opts = {
@@ -61,7 +70,7 @@ async function apiCall(path, method = "GET", body = null) {
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 4000);
+  const timeoutId = setTimeout(() => controller.abort(), 4500);
   opts.signal = controller.signal;
 
   try {
@@ -74,9 +83,279 @@ async function apiCall(path, method = "GET", body = null) {
   }
 }
 
-// Poll status
-let isSwitchingConv = false;
+// --- LIGHTWEIGHT CLIENT-SIDE MARKDOWN RENDERER ---
+function escapeHtml(str) {
+  if (!str) return "";
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
 
+function renderMarkdown(md) {
+  if (!md) return "";
+
+  // 1. Extract code blocks first to protect formatting
+  const codeBlocks = [];
+  let text = md.replace(/```([a-zA-Z0-9_\-\.]*)\n([\s\S]*?)```/g, (match, lang, code) => {
+    const id = `__CODE_BLOCK_${codeBlocks.length}__`;
+    codeBlocks.push({ lang: lang || "code", code: code.trimEnd() });
+    return id;
+  });
+
+  // 2. Escape HTML
+  text = escapeHtml(text);
+
+  // 3. Inline code
+  text = text.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
+
+  // 4. Headers
+  text = text.replace(/^### (.*$)/gim, '<h4 class="md-h4">$1</h4>');
+  text = text.replace(/^## (.*$)/gim, '<h3 class="md-h3">$1</h3>');
+  text = text.replace(/^# (.*$)/gim, '<h3 class="md-h3">$1</h3>');
+
+  // 5. Bold & Italic
+  text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  text = text.replace(/\*(.*?)\*/g, '<em>$1</em>');
+
+  // 6. Blockquotes
+  text = text.replace(/^>\s?(.*$)/gim, '<blockquote>$1</blockquote>');
+
+  // 7. Unordered lists
+  text = text.replace(/^\s*[-*]\s+(.*$)/gim, '<li>$1</li>');
+  text = text.replace(/(<li>.*<\/li>)/gim, '<ul>$1</ul>');
+
+  // 8. Numbered lists
+  text = text.replace(/^\s*\d+\.\s+(.*$)/gim, '<li>$1</li>');
+
+  // 9. Paragraphs and line breaks
+  text = text.replace(/\n\n+/g, '</p><p>');
+  text = text.replace(/\n/g, '<br>');
+  text = `<p>${text}</p>`;
+
+  // Clean empty paragraphs
+  text = text.replace(/<p>\s*<\/p>/g, '');
+
+  // 10. Restore code blocks with 1-click Copy button
+  codeBlocks.forEach((item, index) => {
+    const placeholder = `__CODE_BLOCK_${index}__`;
+    const escapedCode = escapeHtml(item.code);
+    const htmlBlock = `
+      <div class="code-block">
+        <div class="code-header">
+          <span class="code-lang">${escapeHtml(item.lang)}</span>
+          <button class="btn-copy-code" data-code="${encodeURIComponent(item.code)}">📋 Скопировать</button>
+        </div>
+        <pre><code>${escapedCode}</code></pre>
+      </div>
+    `;
+    text = text.replace(placeholder, htmlBlock);
+  });
+
+  return text;
+}
+
+// Copy Code Handler
+document.addEventListener("click", (e) => {
+  if (e.target && e.target.classList.contains("btn-copy-code")) {
+    const code = decodeURIComponent(e.target.getAttribute("data-code") || "");
+    if (!code) return;
+    haptic(25);
+    
+    // Copy to clipboard
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(code).then(() => {
+        showToast("Код скопирован в буфер!");
+      });
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = code;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      showToast("Код скопирован!");
+    }
+  }
+});
+
+// --- CHAT LOGIC ---
+async function fetchChat(autoScroll = true) {
+  const feed = document.getElementById("chatFeed");
+  const emptyState = document.getElementById("chatEmptyState");
+  const activityBanner = document.getElementById("agentActivityBanner");
+  const activityText = document.getElementById("agentActivityText");
+  const statusPill = document.getElementById("agentStatusPill");
+  const statusLabel = document.getElementById("agentStatusLabel");
+  if (!feed) return;
+
+  try {
+    const params = currentConvId ? `?conversation_id=${encodeURIComponent(currentConvId)}` : "";
+    const res = await apiCall(`/api/antigravity/chat${params}`);
+    if (!res || res.status !== "ok") return;
+
+    if (res.conversation_id && !currentConvId) {
+      currentConvId = res.conversation_id;
+    }
+
+    // Update Agent Live Status
+    const agentStatus = res.agent_status || "idle";
+    const currentAction = res.current_action || "";
+
+    if (statusPill && statusLabel) {
+      statusPill.className = "agent-live-pill " + agentStatus;
+      if (agentStatus === "executing") {
+        statusLabel.textContent = "Действие...";
+      } else if (agentStatus === "thinking") {
+        statusLabel.textContent = "Думает...";
+      } else if (agentStatus === "idle") {
+        statusLabel.textContent = "Онлайн";
+      } else {
+        statusLabel.textContent = "Офлайн";
+      }
+    }
+
+    // Update Activity Banner
+    if (activityBanner && activityText) {
+      if (agentStatus === "executing" || agentStatus === "thinking") {
+        activityBanner.style.display = "flex";
+        activityText.textContent = currentAction ? `⚙️ ${currentAction}` : "Агент выполняет задачу...";
+      } else {
+        activityBanner.style.display = "none";
+      }
+    }
+
+    // Render Messages if count changed or empty
+    const messages = res.messages || [];
+    if (messages.length === 0) {
+      if (emptyState) emptyState.style.display = "flex";
+      feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
+      lastMessageCount = 0;
+      return;
+    }
+
+    if (emptyState) emptyState.style.display = "none";
+
+    // Only re-render if count or last message changed
+    if (messages.length !== lastMessageCount || isSendingPrompt) {
+      lastMessageCount = messages.length;
+      isSendingPrompt = false;
+
+      // Keep emptyState element, remove old bubbles
+      feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
+
+      messages.forEach(msg => {
+        const bubble = document.createElement("div");
+        bubble.className = `chat-msg msg-${msg.role}`;
+        
+        let timeStr = "";
+        if (msg.created_at) {
+          try {
+            const d = new Date(msg.created_at);
+            timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          } catch (e) {}
+        }
+
+        if (msg.role === "user") {
+          bubble.innerHTML = `
+            <div class="msg-bubble-user">${escapeHtml(msg.text)}</div>
+            <div class="msg-meta">${timeStr}</div>
+          `;
+        } else {
+          bubble.innerHTML = `
+            <div class="msg-bubble-assistant">${renderMarkdown(msg.text)}</div>
+            <div class="msg-meta">
+              <span>Antigravity</span>
+              ${timeStr ? `<span>• ${timeStr}</span>` : ""}
+            </div>
+          `;
+        }
+        feed.appendChild(bubble);
+      });
+
+      if (autoScroll) {
+        setTimeout(() => {
+          feed.scrollTop = feed.scrollHeight;
+        }, 30);
+      }
+    }
+  } catch (err) {
+    // Network fail or PC sleep
+  }
+}
+
+// Send Prompt to Antigravity
+async function sendPrompt() {
+  const input = document.getElementById("promptInput");
+  const chkFocus = document.getElementById("chkFocusWindow");
+  const btn = document.getElementById("btnSendPrompt");
+  if (!input || !btn) return;
+
+  const text = input.value.trim();
+  if (!text) {
+    showToast("Введи текст сообщения");
+    return;
+  }
+
+  haptic(35);
+  btn.disabled = true;
+  isSendingPrompt = true;
+
+  // Optimistic UI: append user message to feed immediately
+  const feed = document.getElementById("chatFeed");
+  const emptyState = document.getElementById("chatEmptyState");
+  if (emptyState) emptyState.style.display = "none";
+
+  if (feed) {
+    const bubble = document.createElement("div");
+    bubble.className = "chat-msg msg-user";
+    const nowStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    bubble.innerHTML = `
+      <div class="msg-bubble-user">${escapeHtml(text)}</div>
+      <div class="msg-meta">${nowStr}</div>
+    `;
+    feed.appendChild(bubble);
+    feed.scrollTop = feed.scrollHeight;
+  }
+
+  // Clear input
+  input.value = "";
+  input.style.height = "auto";
+
+  // Show activity banner right away
+  const activityBanner = document.getElementById("agentActivityBanner");
+  const activityText = document.getElementById("agentActivityText");
+  if (activityBanner && activityText) {
+    activityBanner.style.display = "flex";
+    activityText.textContent = "Передано в Antigravity. Ожидание ответа...";
+  }
+
+  try {
+    const res = await apiCall("/api/antigravity/send", "POST", {
+      text: text,
+      focus: chkFocus ? chkFocus.checked : false,
+      conversation_id: currentConvId || null
+    });
+
+    if (res.status === "ok") {
+      showToast("✨ Запрос отправлен в IDE!");
+      // Rapid poll to catch thinking & responses
+      for (let i = 1; i <= 6; i++) {
+        setTimeout(() => fetchChat(true), i * 800);
+      }
+    } else {
+      showToast("Ошибка: " + (res.message || "Не удалось отправить"));
+    }
+  } catch (e) {
+    showToast("Ошибка связи с сервером Antigravity");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Load Conversations Dropdown
 async function loadConversations() {
   const select = document.getElementById("conversationSelect");
   if (!select || isSwitchingConv) return;
@@ -85,17 +364,15 @@ async function loadConversations() {
     const res = await apiCall("/api/antigravity/conversations");
     if (!res || !res.conversations || res.conversations.length === 0) return;
 
-    // Check if options changed
-    const currentVal = select.value;
+    const currentVal = select.value || currentConvId;
     const items = res.conversations;
 
-    // Build options
     select.innerHTML = "";
     
-    // Default current option
+    // Auto active option
     const optCurrent = document.createElement("option");
     optCurrent.value = "";
-    optCurrent.textContent = "● Авто (Текущий активный)";
+    optCurrent.textContent = "● Текущий активный чат";
     select.appendChild(optCurrent);
 
     items.forEach(c => {
@@ -104,6 +381,7 @@ async function loadConversations() {
       opt.textContent = c.title + (c.isCurrent ? " (активен)" : "");
       if (c.isCurrent && !currentVal) {
         opt.selected = true;
+        currentConvId = c.id;
       } else if (currentVal === c.id) {
         opt.selected = true;
       }
@@ -112,6 +390,7 @@ async function loadConversations() {
   } catch (e) {}
 }
 
+// --- TELEMETRY & STATUS ---
 async function pollStatus() {
   try {
     const pcStatus = await apiCall("/api/pc/status");
@@ -122,7 +401,7 @@ async function pollStatus() {
       localStorage.setItem("pc_remote_mac", pcStatus.mac_address);
     }
 
-    // Update Telemetry
+    // Telemetry Gauges
     const cpuStat = document.getElementById("cpuStat");
     const cpuFill = document.getElementById("cpuFill");
     if (cpuStat && cpuFill) {
@@ -144,18 +423,22 @@ async function pollStatus() {
       activeWin.textContent = pcStatus.active_window || "—";
     }
 
-    // Update Antigravity Status
-    const agRes = await apiCall("/api/antigravity/status");
-    const agIndicator = document.getElementById("agIndicator");
-    const agBadge = document.getElementById("agTagBadge");
+    // SteamGhost status badge
+    const ghostDesc = document.getElementById("ghostStatusDesc");
+    if (ghostDesc) {
+      if (pcStatus.steamghost_running) {
+        ghostDesc.textContent = "● РАБОТАЕТ (Idle)";
+        ghostDesc.style.color = "var(--success)";
+      } else {
+        ghostDesc.textContent = "Фоновый idle игр";
+        ghostDesc.style.color = "var(--text-muted)";
+      }
+    }
 
+    // Antigravity Bridge Status
+    const agRes = await apiCall("/api/antigravity/status");
     if (agRes && agRes.connected) {
-      if (agIndicator) agIndicator.style.backgroundColor = "var(--success)";
-      if (agBadge) agBadge.textContent = "ONLINE";
       loadConversations();
-    } else {
-      if (agIndicator) agIndicator.style.backgroundColor = "var(--text-muted)";
-      if (agBadge) agBadge.textContent = "IDLE";
     }
 
   } catch (err) {
@@ -176,60 +459,15 @@ function setConnectionState(online) {
   if (!badge || !text) return;
 
   if (online) {
-    badge.className = "connection-badge online";
+    badge.className = "connection-pill online";
     text.textContent = `${config.host}:${config.port}`;
   } else {
-    badge.className = "connection-badge offline";
-    text.textContent = "Нет связи";
+    badge.className = "connection-pill offline";
+    text.textContent = "Офлайн";
   }
 }
 
-// Send Prompt to Antigravity
-async function sendPrompt() {
-  const input = document.getElementById("promptInput");
-  const chkFocus = document.getElementById("chkFocusWindow");
-  const btn = document.getElementById("btnSendPrompt");
-  const select = document.getElementById("conversationSelect");
-  if (!input) return;
-
-  const text = input.value.trim();
-  if (!text) {
-    showToast("Введи текст сообщения");
-    return;
-  }
-
-  const convId = select ? select.value : "";
-
-  haptic(35);
-  btn.disabled = true;
-  btn.innerHTML = `<span>Отправка...</span>`;
-
-  try {
-    const res = await apiCall("/api/antigravity/send", "POST", {
-      text: text,
-      focus: chkFocus ? chkFocus.checked : false,
-      conversation_id: convId || null
-    });
-
-    if (res.status === "ok") {
-      showToast("✨ Сообщение отправлено в Antigravity!");
-      input.value = "";
-    } else {
-      showToast("Ошибка: " + (res.message || "Не удалось отправить"));
-    }
-  } catch (e) {
-    showToast("Ошибка сети при отправке в IDE");
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = `<span>Отправить в IDE</span>
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="22" y1="2" x2="11" y2="13"></line>
-        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-      </svg>`;
-  }
-}
-
-// Trigger PC Action
+// PC Action Trigger
 async function triggerAction(action, extra = {}) {
   haptic(25);
   try {
@@ -245,16 +483,16 @@ async function triggerAction(action, extra = {}) {
   }
 }
 
-// Clipboard Actions
+// Clipboard Functions
 async function refreshClipboard() {
   haptic(20);
   try {
     const res = await apiCall("/api/clipboard");
     const box = document.getElementById("pcClipboardView");
     if (box) {
-      box.textContent = res.text || "(Буфер обмена пуст)";
+      box.textContent = res.text || "(Буфер обмена ПК пуст)";
     }
-    showToast("Буфер ПК обновлен");
+    showToast("Буфер ПК прочитан");
   } catch (e) {
     showToast("Не удалось прочитать буфер ПК");
   }
@@ -270,7 +508,7 @@ async function sendClipboardText() {
   try {
     const res = await apiCall("/api/clipboard", "POST", { text });
     if (res.status === "ok") {
-      showToast("Текст скопирован в буфер ПК!");
+      showToast("Скопировано в буфер ПК!");
       input.value = "";
       refreshClipboard();
     }
@@ -279,7 +517,7 @@ async function sendClipboardText() {
   }
 }
 
-// Setup Event Listeners
+// --- EVENT LISTENERS SETUP ---
 function setupEvents() {
   // Navigation Tabs
   const navItems = document.querySelectorAll(".nav-item");
@@ -291,46 +529,66 @@ function setupEvents() {
 
       item.classList.add("active");
       const targetId = item.getAttribute("data-tab");
+      activeTab = targetId;
       const targetPane = document.getElementById(targetId);
       if (targetPane) targetPane.classList.add("active");
+
+      if (targetId === "tabAntigravity") {
+        fetchChat(true);
+      }
     });
   });
 
-  // Wake-on-LAN Button
-  const btnWol = document.getElementById("btnWakeOnLan");
-  if (btnWol) {
-    btnWol.addEventListener("click", () => {
-      haptic(40);
-      let sent = false;
-      if (window.AndroidBridge && typeof window.AndroidBridge.sendWakeOnLan === "function") {
-        sent = window.AndroidBridge.sendWakeOnLan(config.mac || "A83B7676208F");
-      }
-      if (sent) {
-        showToast("⚡ Magic Packet отправлен! Будим ПК...");
-      } else {
-        showToast("📡 Пакет WoL передан в сеть! Проверяем ПК...");
-      }
-      // Rapid retry polling
-      for (let i = 1; i <= 8; i++) {
-        setTimeout(pollStatus, i * 1200);
+  // Prompt Auto-resize Textarea
+  const promptInput = document.getElementById("promptInput");
+  if (promptInput) {
+    promptInput.addEventListener("input", () => {
+      promptInput.style.height = "auto";
+      promptInput.style.height = Math.min(promptInput.scrollHeight, 100) + "px";
+    });
+
+    promptInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendPrompt();
       }
     });
   }
 
-  // Conversation selector
+  // Send Button
+  const btnSend = document.getElementById("btnSendPrompt");
+  if (btnSend) btnSend.addEventListener("click", sendPrompt);
+
+  // Quick Chips
+  document.querySelectorAll(".chip[data-prompt]").forEach(chip => {
+    chip.addEventListener("click", () => {
+      haptic(15);
+      const text = chip.getAttribute("data-prompt");
+      if (promptInput) {
+        promptInput.value = text;
+        promptInput.focus();
+        promptInput.style.height = "auto";
+      }
+    });
+  });
+
+  // Conversation Selector
   const convSelect = document.getElementById("conversationSelect");
   if (convSelect) {
     convSelect.addEventListener("change", async () => {
       haptic(20);
       const val = convSelect.value;
-      if (!val) return;
+      currentConvId = val;
       isSwitchingConv = true;
-      showToast("Переключаю диалог в IDE...");
+      lastMessageCount = 0;
+      showToast("Переключаю диалог...");
       try {
-        await apiCall("/api/antigravity/conversation/switch", "POST", { id: val });
-        showToast("✨ Диалог переключен!");
+        if (val) {
+          await apiCall("/api/antigravity/conversation/switch", "POST", { id: val });
+        }
+        await fetchChat(true);
       } catch (e) {
-        showToast("Ошибка переключения диалога");
+        showToast("Ошибка переключения чата");
       } finally {
         isSwitchingConv = false;
       }
@@ -343,35 +601,39 @@ function setupEvents() {
     btnNewChat.addEventListener("click", async () => {
       haptic(30);
       isSwitchingConv = true;
-      showToast("Создаю новый чат в IDE...");
+      lastMessageCount = 0;
+      currentConvId = "";
+      showToast("Создаю новый диалог в IDE...");
       try {
         await apiCall("/api/antigravity/conversation/new", "POST");
-        showToast("✨ Новый чат создан!");
-        setTimeout(loadConversations, 1500);
+        showToast("✨ Новый диалог создан!");
+        setTimeout(() => {
+          loadConversations();
+          fetchChat(true);
+        }, 1200);
       } catch (e) {
-        showToast("Ошибка создания нового чата");
+        showToast("Ошибка создания чата");
       } finally {
         isSwitchingConv = false;
       }
     });
   }
 
-  // Antigravity Prompt Send
-  const btnSend = document.getElementById("btnSendPrompt");
-  if (btnSend) btnSend.addEventListener("click", sendPrompt);
-
-  // Quick prompt chips
-  document.querySelectorAll(".chip[data-prompt]").forEach(chip => {
-    chip.addEventListener("click", () => {
-      haptic(15);
-      const text = chip.getAttribute("data-prompt");
-      const input = document.getElementById("promptInput");
-      if (input) {
-        input.value = text;
-        input.focus();
+  // Wake-on-LAN Button
+  const btnWol = document.getElementById("btnWakeOnLan");
+  if (btnWol) {
+    btnWol.addEventListener("click", () => {
+      haptic(40);
+      let sent = false;
+      if (window.AndroidBridge && typeof window.AndroidBridge.sendWakeOnLan === "function") {
+        sent = window.AndroidBridge.sendWakeOnLan(config.mac || "A83B7676208F");
+      }
+      showToast("📡 Пакет WoL отправлен! Проверяем ПК...");
+      for (let i = 1; i <= 8; i++) {
+        setTimeout(pollStatus, i * 1200);
       }
     });
-  });
+  }
 
   // Volume Buttons
   const btnVolDown = document.getElementById("btnVolDown");
@@ -462,13 +724,22 @@ function setupEvents() {
       modal.classList.remove("open");
       showToast("Настройки сохранены. Проверка связи...");
       pollStatus();
+      fetchChat(true);
     });
   }
 }
 
-// Init
+// Initializer
 window.addEventListener("DOMContentLoaded", () => {
   setupEvents();
   pollStatus();
-  statusPollTimer = setInterval(pollStatus, 2500);
+  fetchChat(true);
+
+  // Regular Polling intervals
+  statusPollTimer = setInterval(pollStatus, 3000);
+  chatPollTimer = setInterval(() => {
+    if (activeTab === "tabAntigravity") {
+      fetchChat(false);
+    }
+  }, 1800);
 });
