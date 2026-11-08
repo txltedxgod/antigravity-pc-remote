@@ -174,6 +174,15 @@ async def handle_pc_action(request):
         res = win32_controls.kill_application(app_name)
         return json_response(res)
 
+    elif action in ("open_url", "search", "google"):
+        target = body.get("url") or body.get("query") or body.get("text", "")
+        res = win32_controls.open_url(target)
+        return json_response(res)
+
+    elif action in ("restart", "reboot"):
+        res = win32_controls.restart_pc()
+        return json_response(res)
+
     return json_response({"status": "error", "message": f"Unknown action: {action}"}, status=400)
 
 async def handle_get_clipboard(request):

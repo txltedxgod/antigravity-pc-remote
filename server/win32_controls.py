@@ -304,3 +304,24 @@ def kill_application(app_key):
         return {"status": "ok", "message": f"{target} terminated"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+def open_url(target):
+    """Opens a URL or Google search query on the user's desktop."""
+    target = (target or "").strip()
+    if not target:
+        return {"status": "error", "message": "Empty query or URL"}
+    if not target.startswith("http://") and not target.startswith("https://"):
+        import urllib.parse
+        target = f"https://www.google.com/search?q={urllib.parse.quote_plus(target)}"
+    
+    chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    if os.path.exists(chrome_path):
+        subprocess.Popen([chrome_path, target])
+    else:
+        subprocess.Popen(["cmd.exe", "/c", "start", "", target], shell=True)
+    return {"status": "ok", "url": target}
+
+def restart_pc():
+    """Initiates a safe PC reboot with 5 seconds warning."""
+    os.system("shutdown /r /t 5")
+    return {"status": "ok", "message": "System reboot initiated (5s delay)"}
