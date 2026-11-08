@@ -231,6 +231,38 @@ def launch_application(app_key):
         os.system("start steam://open/main")
         return {"status": "ok", "message": "Steam client launched"}
 
+    elif app_key in ("cs2", "cs", "730"):
+        os.system("start steam://run/730")
+        return {"status": "ok", "message": "CS2 launched via Steam"}
+
+    elif app_key in ("dota2", "dota", "570"):
+        os.system("start steam://run/570")
+        return {"status": "ok", "message": "Dota 2 launched via Steam"}
+
+    elif app_key in ("taxilife", "taxi", "1351410"):
+        os.system("start steam://run/1351410")
+        return {"status": "ok", "message": "Taxi Life launched via Steam"}
+
+    elif app_key in ("rust", "252490"):
+        os.system("start steam://run/252490")
+        return {"status": "ok", "message": "Rust launched via Steam"}
+
+    elif app_key in ("banana", "292330"):
+        os.system("start steam://run/292330")
+        return {"status": "ok", "message": "Banana launched via Steam"}
+
+    elif app_key in ("tf2", "440"):
+        os.system("start steam://run/440")
+        return {"status": "ok", "message": "Team Fortress 2 launched via Steam"}
+
+    elif app_key in ("wallpaper", "wallpaperengine", "431960"):
+        os.system("start steam://run/431960")
+        return {"status": "ok", "message": "Wallpaper Engine launched"}
+
+    elif app_key.isdigit():
+        os.system(f"start steam://run/{app_key}")
+        return {"status": "ok", "message": f"Steam game {app_key} launched"}
+
     elif app_key == "telegram":
         os.system("start tg://")
         return {"status": "ok", "message": "Telegram launched"}

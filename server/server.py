@@ -26,6 +26,7 @@ if sys.stdout.encoding != 'utf-8':
 
 import win32_controls
 import antigravity_bridge
+import tunnel_manager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,8 +83,9 @@ async def handle_ping(request):
     return json_response({
         "status": "ok",
         "service": "PCRemoteServer",
-        "version": "1.0.0",
-        "host": socket.gethostname()
+        "version": "2.0.0",
+        "host": socket.gethostname(),
+        "cloud_url": tunnel_manager.get_current_tunnel_url()
     })
 
 async def handle_pc_status(request):
@@ -107,7 +109,8 @@ async def handle_pc_status(request):
         "active_window": win_title,
         "steamghost_running": steamghost_running,
         "lan_ip": get_lan_ip(),
-        "mac_address": win32_controls.get_mac_address()
+        "mac_address": win32_controls.get_mac_address(),
+        "cloud_url": tunnel_manager.get_current_tunnel_url()
     })
 
 async def handle_pc_action(request):
@@ -279,6 +282,9 @@ def run_server(port=8765):
 
     # Enable Away Mode so PC doesn't deep sleep while serving
     win32_controls.set_keep_awake(True)
+
+    # Start Cloudflare Tunnel for worldwide access
+    tunnel_manager.start_tunnel(port)
 
     web.run_app(app, host="0.0.0.0", port=port, print=None)
 

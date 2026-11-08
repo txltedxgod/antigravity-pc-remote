@@ -19,10 +19,29 @@ let isSendingPrompt = false;
 
 let chatPollTimer = null;
 let statusPollTimer = null;
+let cloudUrl = localStorage.getItem("pc_remote_cloud_url") || "";
 
-// Helpers
+// Helpers: Intelligent URL Resolver (LAN IP vs Global Cloudflare Tunnel)
 function getApiUrl(path) {
-  return `http://${config.host}:${config.port}${path}`;
+  let host = (config.host || "").trim();
+  
+  if (host.startsWith("http://") || host.startsWith("https://")) {
+    const clean = host.replace(/\/+$/, "");
+    if (clean.includes("trycloudflare.com") || clean.includes("ngrok") || clean.includes("loca.lt")) {
+      return `${clean}${path}`;
+    }
+    if (config.port && config.port !== "80" && config.port !== "443" && !clean.includes(":")) {
+      return `${clean}:${config.port}${path}`;
+    }
+    return `${clean}${path}`;
+  }
+
+  if (host.includes("trycloudflare.com") || host.includes("ngrok") || host.includes("loca.lt")) {
+    return `https://${host}${path}`;
+  }
+
+  const port = config.port ? `:${config.port}` : ":8765";
+  return `http://${host}${port}${path}`;
 }
 
 // Haptic feedback via native Android Bridge or browser vibration API
@@ -79,6 +98,24 @@ async function apiCall(path, method = "GET", body = null) {
     return await res.json();
   } catch (err) {
     clearTimeout(timeoutId);
+    // Intelligent Auto-Fallback: if local Wi-Fi drops and we have cloudUrl, seamlessly retry via Cloudflare
+    if (cloudUrl && !config.host.includes("trycloudflare.com")) {
+      try {
+        const cloudBase = cloudUrl.replace(/\/+$/, "");
+        const fallbackUrl = `${cloudBase}${path}`;
+        const retryRes = await fetch(fallbackUrl, {
+          method,
+          headers: { "Content-Type": "application/json" },
+          body: body ? JSON.stringify(body) : undefined
+        });
+        if (retryRes.ok) {
+          config.host = cloudUrl;
+          localStorage.setItem("pc_remote_host", cloudUrl);
+          showToast("🌐 Переключено на Cloudflare туннель!");
+          return await retryRes.json();
+        }
+      } catch (e) {}
+    }
     throw err;
   }
 }
@@ -435,6 +472,18 @@ async function pollStatus() {
       }
     }
 
+    // Cloudflare Tunnel URL auto-detection
+    if (pcStatus.cloud_url) {
+      cloudUrl = pcStatus.cloud_url;
+      localStorage.setItem("pc_remote_cloud_url", pcStatus.cloud_url);
+      const box = document.getElementById("cloudTunnelInfoBox");
+      const disp = document.getElementById("cloudUrlDisplay");
+      if (box && disp) {
+        box.style.display = "block";
+        disp.value = pcStatus.cloud_url;
+      }
+    }
+
     // Antigravity Bridge Status
     const agRes = await apiCall("/api/antigravity/status");
     if (agRes && agRes.connected) {
@@ -697,7 +746,25 @@ function setupEvents() {
       haptic(20);
       if (hostInput) hostInput.value = config.host;
       if (portInput) portInput.value = config.port;
+      const box = document.getElementById("cloudTunnelInfoBox");
+      const disp = document.getElementById("cloudUrlDisplay");
+      if (box && disp && cloudUrl) {
+        box.style.display = "block";
+        disp.value = cloudUrl;
+      }
       modal.classList.add("open");
+    });
+  }
+
+  const btnUseCloud = document.getElementById("btnUseCloudUrl");
+  if (btnUseCloud) {
+    btnUseCloud.addEventListener("click", () => {
+      haptic(25);
+      const disp = document.getElementById("cloudUrlDisplay");
+      if (disp && hostInput && disp.value) {
+        hostInput.value = disp.value;
+        showToast("Cloudflare URL вставлен в поле!");
+      }
     });
   }
 

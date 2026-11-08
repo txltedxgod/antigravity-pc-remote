@@ -111,8 +111,11 @@
         <!-- Quick Chips Carousel -->
         <div class="chips-carousel">
           <button class="chip" data-prompt="Каков текущий статус задач?">📊 Статус задач</button>
-          <button class="chip" data-prompt="Запусти автоматические тесты">🧪 Тесты</button>
+          <button class="chip" data-prompt="Запусти CS2">🔫 Запусти CS2</button>
+          <button class="chip" data-prompt="Запусти Dota 2">🛡️ Запусти Dota 2</button>
+          <button class="chip" data-prompt="Запусти Taxi Life">🚖 Запусти Taxi Life</button>
           <button class="chip" data-prompt="Запусти SteamGhost и начни фарм">👻 SteamGhost</button>
+          <button class="chip" data-prompt="Запусти автоматические тесты">🧪 Тесты</button>
           <button class="chip" data-prompt="Заблокируй компьютер">🔒 Заблокируй ПК</button>
           <button class="chip" data-prompt="Сделай коммит и отправь изменения">📦 Коммит и пуш</button>
         </div>
@@ -244,8 +247,65 @@
       </div>
     </section>
 
-    <!-- TAB 3: App Launchers -->
+    <!-- TAB 3: App & Game Launchers -->
     <section class="tab-pane" id="tabApps">
+      <!-- Games Section -->
+      <div class="glass-card">
+        <div class="card-title-row">
+          <div class="card-title-icon media-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            </svg>
+          </div>
+          <span class="card-heading">🎮 Игры Steam (Запуск в 1 клик)</span>
+        </div>
+        <div class="apps-grid">
+          <button class="app-card highlight-game" data-app="cs2">
+            <div class="app-icon-badge">🔫</div>
+            <div class="app-details">
+              <span class="app-name">Counter-Strike 2</span>
+              <span class="app-desc">Steam AppID: 730</span>
+            </div>
+          </button>
+          <button class="app-card highlight-game" data-app="dota2">
+            <div class="app-icon-badge">🛡️</div>
+            <div class="app-details">
+              <span class="app-name">Dota 2</span>
+              <span class="app-desc">Steam AppID: 570</span>
+            </div>
+          </button>
+          <button class="app-card highlight-game" data-app="taxilife">
+            <div class="app-icon-badge">🚖</div>
+            <div class="app-details">
+              <span class="app-name">Taxi Life</span>
+              <span class="app-desc">City Simulator</span>
+            </div>
+          </button>
+          <button class="app-card highlight-game" data-app="rust">
+            <div class="app-icon-badge">🎯</div>
+            <div class="app-details">
+              <span class="app-name">Rust</span>
+              <span class="app-desc">Survival</span>
+            </div>
+          </button>
+          <button class="app-card highlight-game" data-app="banana">
+            <div class="app-icon-badge">🍌</div>
+            <div class="app-details">
+              <span class="app-name">Banana</span>
+              <span class="app-desc">Clicker Drop</span>
+            </div>
+          </button>
+          <button class="app-card highlight-game" data-app="tf2">
+            <div class="app-icon-badge">🎩</div>
+            <div class="app-details">
+              <span class="app-name">Team Fortress 2</span>
+              <span class="app-desc">Valve FPS</span>
+            </div>
+          </button>
+        </div>
+      </div>
+
+      <!-- System Applications Section -->
       <div class="glass-card">
         <div class="card-title-row">
           <div class="card-title-icon apps-icon">
@@ -256,7 +316,7 @@
               <rect x="3" y="14" width="7" height="7"></rect>
             </svg>
           </div>
-          <span class="card-heading">Быстрый запуск на ПК</span>
+          <span class="card-heading">⚡ Приложения и система</span>
         </div>
         <div class="apps-grid">
           <button class="app-card highlight-ghost" data-app="steamghost">
@@ -407,12 +467,19 @@
       <p class="modal-desc">Укажи локальный IP и порт сервера на компьютере:</p>
       
       <div class="input-field-group">
-        <label for="serverHostInput">IP-адрес ПК в сети Wi-Fi:</label>
-        <input type="text" id="serverHostInput" placeholder="10.0.0.85">
+        <label for="serverHostInput">Локальный IP или Cloudflare URL:</label>
+        <input type="text" id="serverHostInput" placeholder="10.0.0.85 или https://xxxx.trycloudflare.com">
       </div>
       <div class="input-field-group">
-        <label for="serverPortInput">Порт HTTP:</label>
+        <label for="serverPortInput">Порт HTTP (для локального IP):</label>
         <input type="number" id="serverPortInput" placeholder="8765">
+      </div>
+      <div class="cloud-tunnel-info" id="cloudTunnelInfoBox" style="display: none;">
+        <span class="cloud-info-label">🌐 Доступ из любой точки мира (Cloudflare):</span>
+        <div class="cloud-url-row">
+          <input type="text" id="cloudUrlDisplay" readonly>
+          <button class="chip-action" id="btnUseCloudUrl">Использовать</button>
+        </div>
       </div>
 
       <div class="modal-btn-row">

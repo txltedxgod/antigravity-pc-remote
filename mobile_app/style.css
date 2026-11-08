@@ -939,6 +939,49 @@ html, body {
   border-color: rgba(99, 102, 241, 0.3);
 }
 
+.highlight-game {
+  background: rgba(0, 242, 254, 0.05);
+  border-color: rgba(0, 242, 254, 0.22);
+}
+
+.highlight-game:active {
+  background: rgba(0, 242, 254, 0.15);
+  border-color: rgba(0, 242, 254, 0.45);
+}
+
+.cloud-tunnel-info {
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  margin-bottom: 12px;
+}
+
+.cloud-info-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #A5B4FC;
+  margin-bottom: 6px;
+}
+
+.cloud-url-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.cloud-url-row input {
+  flex: 1;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-xs);
+  padding: 6px 8px;
+  font-size: 11px;
+  color: #38BDF8;
+  outline: none;
+}
+
 .app-icon-badge {
   font-size: 24px;
 }

@@ -10,5 +10,7 @@ ENV/
 build/
 *.idsig
 *.log
+cloudflared.exe
+tunnel_url.txt
 .DS_Store
 Thumbs.db
