@@ -591,6 +591,75 @@ async function triggerAction(action, extra = {}) {
   }
 }
 
+// Active Windows & Process Manager
+async function fetchActiveWindows() {
+  const container = document.getElementById("activeWindowsList");
+  if (!container) return;
+
+  try {
+    const res = await apiCall("/api/pc/windows");
+    if (!res || !res.windows) return;
+
+    if (res.windows.length === 0) {
+      container.innerHTML = '<div style="text-align: center; color: var(--text-muted); font-size: 12px; padding: 12px 0;">Нет активных видимых окон</div>';
+      return;
+    }
+
+    container.innerHTML = "";
+    res.windows.forEach(w => {
+      const item = document.createElement("div");
+      item.className = "window-item";
+
+      let icon = "🪟";
+      const p = (w.process_name || "").toLowerCase();
+      const t = (w.title || "").toLowerCase();
+      if (p.includes("ghost") || t.includes("ghost")) icon = "👻";
+      else if (p.includes("cs2") || t.includes("counter-strike")) icon = "🔫";
+      else if (p.includes("dota") || t.includes("dota")) icon = "🛡️";
+      else if (p.includes("taxi")) icon = "🚖";
+      else if (p.includes("rust")) icon = "🎯";
+      else if (p.includes("banana")) icon = "🍌";
+      else if (p.includes("chrome") || p.includes("firefox") || p.includes("edge")) icon = "🌐";
+      else if (p.includes("telegram")) icon = "💬";
+      else if (p.includes("discord")) icon = "🎙️";
+      else if (p.includes("steam")) icon = "🎮";
+      else if (p.includes("spotify")) icon = "🎵";
+      else if (p.includes("terminal") || p.includes("cmd") || p.includes("powershell")) icon = "💻";
+
+      item.innerHTML = `
+        <div class="window-item-left">
+          <div class="window-icon-badge">${icon}</div>
+          <div class="window-info">
+            <span class="window-title" title="${escapeHtml(w.title)}">${escapeHtml(w.title)}</span>
+            <span class="window-pname">${escapeHtml(w.process_name || "pid: " + w.pid)}</span>
+          </div>
+        </div>
+        <div class="window-actions">
+          <button class="btn-window-action btn-window-focus" title="Вывести на экран">Фокус</button>
+          <button class="btn-window-action btn-window-kill" title="Закрыть программу">Закрыть</button>
+        </div>
+      `;
+
+      item.querySelector(".btn-window-focus").addEventListener("click", () => {
+        triggerAction("focus_window", { hwnd: w.hwnd });
+        showToast(`🎯 Фокус: ${w.title.slice(0, 20)}`);
+      });
+
+      item.querySelector(".btn-window-kill").addEventListener("click", () => {
+        triggerAction("close_window", { hwnd: w.hwnd, force: true });
+        showToast(`🛑 Закрыто: ${w.process_name || w.title.slice(0, 15)}`);
+        setTimeout(fetchActiveWindows, 600);
+      });
+
+      container.appendChild(item);
+    });
+  } catch (e) {
+    if (container) {
+      container.innerHTML = '<div style="text-align: center; color: var(--text-muted); font-size: 12px; padding: 12px 0;">Ошибка получения списка окон</div>';
+    }
+  }
+}
+
 // Clipboard Functions
 async function refreshClipboard() {
   haptic(20);
@@ -643,6 +712,8 @@ function setupEvents() {
 
       if (targetId === "tabAntigravity") {
         fetchChat(true);
+      } else if (targetId === "tabControls" || targetId === "tabApps") {
+        fetchActiveWindows();
       }
     });
   });
@@ -833,6 +904,43 @@ function setupEvents() {
     });
   }
 
+  // Window Hotkeys Pad
+  const btnHotCloseActive = document.getElementById("btnHotCloseActive");
+  if (btnHotCloseActive) {
+    btnHotCloseActive.addEventListener("click", () => {
+      triggerAction("close_active");
+      setTimeout(fetchActiveWindows, 700);
+    });
+  }
+
+  const hotkeysMap = {
+    btnHotMinimizeAll: "win_d",
+    btnHotAltTab: "alt_tab",
+    btnHotCloseTab: "ctrl_w",
+    btnHotFullscreen: "f11",
+    btnHotRefresh: "f5",
+    btnHotEsc: "esc",
+    btnHotEnter: "enter",
+    btnHotSpace: "space",
+  };
+
+  Object.entries(hotkeysMap).forEach(([btnId, key]) => {
+    const el = document.getElementById(btnId);
+    if (el) {
+      el.addEventListener("click", () => triggerAction("hotkey", { key }));
+    }
+  });
+
+  // Windows List Refresh
+  const btnRefWin = document.getElementById("btnRefreshWindows");
+  if (btnRefWin) {
+    btnRefWin.addEventListener("click", () => {
+      haptic(20);
+      fetchActiveWindows();
+      showToast("Список окон обновлён");
+    });
+  }
+
   // App Cards
   document.querySelectorAll(".app-card[data-app]").forEach(card => {
     card.addEventListener("click", () => {
@@ -933,6 +1041,7 @@ window.addEventListener("DOMContentLoaded", () => {
   setupEvents();
   pollStatus();
   fetchChat(true);
+  fetchActiveWindows();
 
   // Regular Polling intervals
   statusPollTimer = setInterval(pollStatus, 3000);
@@ -941,4 +1050,10 @@ window.addEventListener("DOMContentLoaded", () => {
       fetchChat(false);
     }
   }, 1800);
+
+  setInterval(() => {
+    if (activeTab === "tabControls") {
+      fetchActiveWindows();
+    }
+  }, 4000);
 });

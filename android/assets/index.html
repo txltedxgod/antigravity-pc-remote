@@ -116,6 +116,9 @@
         <!-- Quick Chips Carousel -->
         <div class="chips-carousel">
           <button class="chip" data-prompt="Каков текущий статус задач?">📊 Статус задач</button>
+          <button class="chip" data-prompt="Закрой активное окно">🛑 Закрой окно</button>
+          <button class="chip" data-prompt="Сверни все окна">🗔 Сверни всё</button>
+          <button class="chip" data-prompt="Закрой SteamGhost">🛑 Закрой SteamGhost</button>
           <button class="chip" data-prompt="Загугли в Chrome последние новости">🌐 Загугли в Chrome</button>
           <button class="chip" data-prompt="Запусти CS2">🔫 Запусти CS2</button>
           <button class="chip" data-prompt="Запусти Dota 2">🛡️ Запусти Dota 2</button>
@@ -291,6 +294,87 @@
           <button class="tactile-btn tactile-accent" id="btnOpenWebSearch" style="padding: 10px 16px; white-space: nowrap;">
             <span>Открыть</span>
           </button>
+        </div>
+      </div>
+
+      <!-- Hotkeys & Window Actions Card -->
+      <div class="glass-card">
+        <div class="card-title-row">
+          <div class="card-title-icon apps-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect>
+              <line x1="6" y1="8" x2="6" y2="8"></line>
+              <line x1="10" y1="8" x2="10" y2="8"></line>
+              <line x1="14" y1="8" x2="14" y2="8"></line>
+              <line x1="18" y1="8" x2="18" y2="8"></line>
+              <line x1="6" y1="12" x2="6" y2="12"></line>
+              <line x1="18" y1="12" x2="18" y2="12"></line>
+              <line x1="7" y1="16" x2="17" y2="16"></line>
+            </svg>
+          </div>
+          <span class="card-heading">⌨️ Горячие клавиши и действия</span>
+        </div>
+        <div class="btn-grid-3" style="margin-top: 10px;">
+          <button class="tactile-btn tactile-danger" id="btnHotCloseActive" title="Закрыть активное окно">
+            <span style="font-size: 14px;">🛑 Alt+F4</span>
+            <span style="font-size: 10px; color: var(--text-muted);">Закрыть окно</span>
+          </button>
+          <button class="tactile-btn" id="btnHotMinimizeAll" title="Свернуть все окна">
+            <span style="font-size: 14px;">🗔 Win+D</span>
+            <span style="font-size: 10px; color: var(--text-muted);">Свернуть всё</span>
+          </button>
+          <button class="tactile-btn" id="btnHotAltTab" title="Переключить окно">
+            <span style="font-size: 14px;">🔄 Alt+Tab</span>
+            <span style="font-size: 10px; color: var(--text-muted);">Переключить</span>
+          </button>
+          <button class="tactile-btn" id="btnHotCloseTab" title="Закрыть вкладку браузера">
+            <span style="font-size: 14px;">📑 Ctrl+W</span>
+            <span style="font-size: 10px; color: var(--text-muted);">Закрыть вкл.</span>
+          </button>
+          <button class="tactile-btn" id="btnHotFullscreen" title="Полный экран">
+            <span style="font-size: 14px;">🖥️ F11</span>
+            <span style="font-size: 10px; color: var(--text-muted);">Полноэкран</span>
+          </button>
+          <button class="tactile-btn" id="btnHotRefresh" title="Обновить страницу">
+            <span style="font-size: 14px;">🔁 F5</span>
+            <span style="font-size: 10px; color: var(--text-muted);">Обновить</span>
+          </button>
+          <button class="tactile-btn" id="btnHotEsc">
+            <span style="font-size: 14px;">⏹️ Esc</span>
+            <span style="font-size: 10px; color: var(--text-muted);">Отмена/Меню</span>
+          </button>
+          <button class="tactile-btn" id="btnHotEnter">
+            <span style="font-size: 14px;">⏎ Enter</span>
+            <span style="font-size: 10px; color: var(--text-muted);">Ввод</span>
+          </button>
+          <button class="tactile-btn" id="btnHotSpace">
+            <span style="font-size: 14px;">␣ Space</span>
+            <span style="font-size: 10px; color: var(--text-muted);">Пробел</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Active Running Programs & Windows Card -->
+      <div class="glass-card">
+        <div class="card-title-row" style="justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div class="card-title-icon apps-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                <line x1="8" y1="21" x2="16" y2="21"></line>
+                <line x1="12" y1="17" x2="12" y2="21"></line>
+              </svg>
+            </div>
+            <span class="card-heading">🪟 Активные окна и процессы</span>
+          </div>
+          <button class="icon-btn" id="btnRefreshWindows" title="Обновить список окон" style="width: 30px; height: 30px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+          </button>
+        </div>
+        <div id="activeWindowsList" style="margin-top: 10px; max-height: 260px; overflow-y: auto;">
+          <div style="text-align: center; color: var(--text-muted); font-size: 12px; padding: 12px 0;">Загрузка списка окон...</div>
         </div>
       </div>
     </section>

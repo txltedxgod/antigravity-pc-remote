@@ -84,6 +84,141 @@ def send_vk(vk_code):
     time.sleep(0.02)
     user32.keybd_event(vk_code, 0, 2, 0) # KEYEVENTF_KEYUP = 2
 
+VK_MAPPING = {
+    "alt_f4": [0x12, 0x73],
+    "win_d": [0x5B, 0x44],
+    "alt_tab": [0x12, 0x09],
+    "ctrl_w": [0x11, 0x57],
+    "ctrl_t": [0x11, 0x54],
+    "ctrl_r": [0x11, 0x52],
+    "f5": [0x74],
+    "f11": [0x7A],
+    "enter": [0x0D],
+    "esc": [0x1B],
+    "space": [0x20],
+    "backspace": [0x08],
+    "tab": [0x09],
+    "win": [0x5B],
+    "up": [0x26],
+    "down": [0x28],
+    "left": [0x25],
+    "right": [0x27],
+}
+
+def trigger_hotkey(name):
+    """Executes a defined keyboard shortcut on the interactive desktop."""
+    name = (name or "").lower().strip()
+    keys = VK_MAPPING.get(name)
+    if not keys:
+        return False
+    hdesk = user32.OpenDesktopW('default', 0, False, 0x01FF)
+    if hdesk:
+        user32.SetThreadDesktop(hdesk)
+    for k in keys:
+        user32.keybd_event(k, 0, 0, 0)
+        time.sleep(0.02)
+    time.sleep(0.04)
+    for k in reversed(keys):
+        user32.keybd_event(k, 0, 2, 0)
+        time.sleep(0.02)
+    return True
+
+def close_active_window():
+    """Closes the current foreground window via WM_CLOSE or Alt+F4."""
+    hdesk = user32.OpenDesktopW('default', 0, False, 0x01FF)
+    if hdesk:
+        user32.SetThreadDesktop(hdesk)
+    hwnd = user32.GetForegroundWindow()
+    if hwnd:
+        user32.PostMessageW(hwnd, 0x0010, 0, 0)
+        return True
+    return trigger_hotkey("alt_f4")
+
+def get_active_windows():
+    """Returns a list of visible top-level windows on the interactive desktop."""
+    hdesk = user32.OpenDesktopW('default', 0, False, 0x01FF)
+    if hdesk:
+        user32.SetThreadDesktop(hdesk)
+
+    proc_map = {}
+    try:
+        res = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True)
+        for line in res.stdout.splitlines():
+            p = [x.strip('"') for x in line.split('","')]
+            if len(p) >= 2:
+                try:
+                    proc_map[int(p[1])] = p[0]
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+
+    windows = []
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def enum_cb(hwnd, lp):
+        if user32.IsWindowVisible(hwnd):
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length > 0:
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buf, length + 1)
+                title = buf.value.strip()
+
+                cloaked = wintypes.DWORD()
+                try:
+                    ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 14, ctypes.byref(cloaked), 4)
+                    if cloaked.value != 0:
+                        return True
+                except Exception:
+                    pass
+
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                pname = proc_map.get(pid.value, "")
+
+                ignored = ("Program Manager", "Setup", "Default IME", "MSCTFIME UI")
+                if title and title not in ignored:
+                    windows.append({
+                        "hwnd": hwnd,
+                        "title": title,
+                        "pid": pid.value,
+                        "process_name": pname
+                    })
+        return True
+
+    user32.EnumDesktopWindows(hdesk, WNDENUMPROC(enum_cb), 0)
+    return windows
+
+def focus_window(hwnd):
+    """Brings the specified window to the foreground."""
+    hdesk = user32.OpenDesktopW('default', 0, False, 0x01FF)
+    if hdesk:
+        user32.SetThreadDesktop(hdesk)
+    try:
+        hwnd = int(hwnd)
+        user32.ShowWindow(hwnd, 9)
+        return bool(user32.SetForegroundWindow(hwnd))
+    except Exception:
+        return False
+
+def close_window(hwnd, force=False):
+    """Closes or terminates a specific window."""
+    hdesk = user32.OpenDesktopW('default', 0, False, 0x01FF)
+    if hdesk:
+        user32.SetThreadDesktop(hdesk)
+    try:
+        hwnd = int(hwnd)
+        if force:
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value > 0:
+                subprocess.run(f"taskkill /F /PID {pid.value}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True
+        user32.PostMessageW(hwnd, 0x0010, 0, 0)
+        return True
+    except Exception:
+        return False
+
 def volume_up(steps=1):
     for _ in range(steps):
         send_vk(VK_VOLUME_UP)

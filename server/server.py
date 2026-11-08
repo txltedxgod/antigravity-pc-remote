@@ -192,7 +192,31 @@ async def handle_pc_action(request):
         res = win32_controls.cancel_restart_pc()
         return json_response(res)
 
+    elif action in ("hotkey", "key"):
+        key_name = body.get("key") or body.get("name", "")
+        success = win32_controls.trigger_hotkey(key_name)
+        return json_response({"status": "ok" if success else "error", "key": key_name})
+
+    elif action == "close_active":
+        success = win32_controls.close_active_window()
+        return json_response({"status": "ok" if success else "error", "action": action})
+
+    elif action == "focus_window":
+        hwnd = body.get("hwnd")
+        success = win32_controls.focus_window(hwnd)
+        return json_response({"status": "ok" if success else "error", "hwnd": hwnd})
+
+    elif action == "close_window":
+        hwnd = body.get("hwnd")
+        force = bool(body.get("force", False))
+        success = win32_controls.close_window(hwnd, force=force)
+        return json_response({"status": "ok" if success else "error", "hwnd": hwnd})
+
     return json_response({"status": "error", "message": f"Unknown action: {action}"}, status=400)
+
+async def handle_pc_windows(request):
+    windows = win32_controls.get_active_windows()
+    return json_response({"status": "ok", "windows": windows, "count": len(windows)})
 
 async def handle_get_clipboard(request):
     text = win32_controls.get_clipboard_text()
@@ -272,6 +296,7 @@ def create_app():
     # API Routes
     app.router.add_get("/api/ping", handle_ping)
     app.router.add_get("/api/pc/status", handle_pc_status)
+    app.router.add_get("/api/pc/windows", handle_pc_windows)
     app.router.add_post("/api/pc/action", handle_pc_action)
     app.router.add_get("/api/clipboard", handle_get_clipboard)
     app.router.add_post("/api/clipboard", handle_set_clipboard)
