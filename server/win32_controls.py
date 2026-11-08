@@ -280,3 +280,27 @@ def launch_application(app_key):
         return {"status": "ok", "message": "Windows Explorer launched"}
 
     return {"status": "error", "message": f"Unknown application: {app_key}"}
+
+def kill_application(app_key):
+    """Terminates process by app key or process name."""
+    app_key = (app_key or "").strip().lower()
+    mapping = {
+        "dota2": "dota2.exe",
+        "dota": "dota2.exe",
+        "cs2": "cs2.exe",
+        "cs": "cs2.exe",
+        "taxilife": "TaxiLife.exe",
+        "taxi": "TaxiLife.exe",
+        "rust": "RustClient.exe",
+        "banana": "Banana.exe",
+        "steamghost": "SteamGhost.exe",
+        "steam": "steam.exe",
+        "chrome": "chrome.exe",
+        "telegram": "Telegram.exe",
+    }
+    target = mapping.get(app_key, f"{app_key}.exe" if not app_key.endswith(".exe") else app_key)
+    try:
+        subprocess.run(f"taskkill /F /IM {target}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return {"status": "ok", "message": f"{target} terminated"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
