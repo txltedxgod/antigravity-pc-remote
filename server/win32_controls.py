@@ -228,55 +228,59 @@ def launch_application(app_key):
         return {"status": "error", "message": "SteamGhost executable not found"}
 
     elif app_key == "steam":
-        os.system("start steam://open/main")
+        run_interactive("start steam://open/main")
         return {"status": "ok", "message": "Steam client launched"}
 
     elif app_key in ("cs2", "cs", "730"):
-        os.system("start steam://run/730")
+        run_interactive("start steam://run/730")
         return {"status": "ok", "message": "CS2 launched via Steam"}
 
     elif app_key in ("dota2", "dota", "570"):
-        os.system("start steam://run/570")
+        run_interactive("start steam://run/570")
         return {"status": "ok", "message": "Dota 2 launched via Steam"}
 
     elif app_key in ("taxilife", "taxi", "1351410"):
-        os.system("start steam://run/1351410")
+        run_interactive("start steam://run/1351410")
         return {"status": "ok", "message": "Taxi Life launched via Steam"}
 
     elif app_key in ("rust", "252490"):
-        os.system("start steam://run/252490")
+        run_interactive("start steam://run/252490")
         return {"status": "ok", "message": "Rust launched via Steam"}
 
     elif app_key in ("banana", "292330"):
-        os.system("start steam://run/292330")
+        run_interactive("start steam://run/292330")
         return {"status": "ok", "message": "Banana launched via Steam"}
 
     elif app_key in ("tf2", "440"):
-        os.system("start steam://run/440")
+        run_interactive("start steam://run/440")
         return {"status": "ok", "message": "Team Fortress 2 launched via Steam"}
 
     elif app_key in ("wallpaper", "wallpaperengine", "431960"):
-        os.system("start steam://run/431960")
+        run_interactive("start steam://run/431960")
         return {"status": "ok", "message": "Wallpaper Engine launched"}
 
     elif app_key.isdigit():
-        os.system(f"start steam://run/{app_key}")
+        run_interactive(f"start steam://run/{app_key}")
         return {"status": "ok", "message": f"Steam game {app_key} launched"}
 
     elif app_key == "telegram":
-        os.system("start tg://")
+        run_interactive("start tg://")
         return {"status": "ok", "message": "Telegram launched"}
 
     elif app_key == "chrome":
-        os.system("start chrome")
+        chrome_exe = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        if os.path.exists(chrome_exe):
+            run_interactive(f'"{chrome_exe}" --profile-directory="Default"')
+        else:
+            run_interactive("start chrome")
         return {"status": "ok", "message": "Chrome launched"}
 
     elif app_key == "taskmgr":
-        os.system("start taskmgr")
+        run_interactive("start taskmgr")
         return {"status": "ok", "message": "Task Manager launched"}
 
     elif app_key == "explorer":
-        os.system("start explorer")
+        run_interactive("start explorer")
         return {"status": "ok", "message": "Windows Explorer launched"}
 
     return {"status": "error", "message": f"Unknown application: {app_key}"}
@@ -305,8 +309,33 @@ def kill_application(app_key):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+def run_interactive(cmd_str):
+    """Executes a command directly on the active user's interactive desktop (WinSta0\\default)."""
+    task_name = f"PCRemoteRun_{int(time.time() * 1000) % 100000}"
+    try:
+        subprocess.run(
+            ['schtasks', '/create', '/tn', task_name, '/tr', f'cmd.exe /c {cmd_str}', '/sc', 'once', '/st', '23:59', '/f', '/it'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3
+        )
+        subprocess.run(
+            ['schtasks', '/run', '/tn', task_name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3
+        )
+        time.sleep(0.4)
+        subprocess.run(
+            ['schtasks', '/delete', '/tn', task_name, '/f'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3
+        )
+        return True
+    except Exception:
+        try:
+            subprocess.Popen(cmd_str, shell=True)
+            return True
+        except Exception:
+            return False
+
 def open_url(target):
-    """Opens a URL or Google search query on the user's desktop."""
+    """Opens a URL or Google search query in Google Chrome on the user's interactive desktop."""
     target = (target or "").strip()
     if not target:
         return {"status": "error", "message": "Empty query or URL"}
@@ -316,12 +345,42 @@ def open_url(target):
     
     chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
     if os.path.exists(chrome_path):
-        subprocess.Popen([chrome_path, target])
+        cmd = f'"{chrome_path}" --profile-directory="Default" "{target}"'
     else:
-        subprocess.Popen(["cmd.exe", "/c", "start", "", target], shell=True)
-    return {"status": "ok", "url": target}
+        cmd = f'start "" "{target}"'
+
+    run_interactive(cmd)
+
+    # Bring Chrome window to foreground
+    try:
+        time.sleep(1)
+        hdesk = user32.OpenDesktopW('default', 0, False, 0x01FF)
+        if hdesk:
+            user32.SetThreadDesktop(hdesk)
+            windows = []
+            WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            def enum_cb(hwnd, lp):
+                if user32.IsWindowVisible(hwnd):
+                    buf = ctypes.create_unicode_buffer(512)
+                    user32.GetWindowTextW(hwnd, buf, 512)
+                    if any(k in buf.value.lower() for k in ['chrome', 'google']):
+                        windows.append(hwnd)
+                return True
+            user32.EnumDesktopWindows(hdesk, WNDENUMPROC(enum_cb), 0)
+            for h in windows:
+                user32.ShowWindow(h, 9) # SW_RESTORE
+                user32.SetForegroundWindow(h)
+    except Exception:
+        pass
+
+    return {"status": "ok", "url": target, "method": "interactive_desktop"}
 
 def restart_pc():
     """Initiates a safe PC reboot with 5 seconds warning."""
-    os.system("shutdown /r /t 5")
+    subprocess.run("shutdown /r /t 5", shell=True)
     return {"status": "ok", "message": "System reboot initiated (5s delay)"}
+
+def cancel_restart_pc():
+    """Aborts a pending system reboot."""
+    subprocess.run("shutdown /a", shell=True)
+    return {"status": "ok", "message": "Reboot aborted"}

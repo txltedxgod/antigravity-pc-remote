@@ -28,10 +28,15 @@ import win32_controls
 import antigravity_bridge
 import tunnel_manager
 
+log_file = SERVER_DIR / "server.log"
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s [%(name)s]: %(message)s",
-    datefmt="%H:%M:%S"
+    datefmt="%H:%M:%S",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(log_file, encoding='utf-8')
+    ]
 )
 logger = logging.getLogger("PCRemoteServer")
 
@@ -181,6 +186,10 @@ async def handle_pc_action(request):
 
     elif action in ("restart", "reboot"):
         res = win32_controls.restart_pc()
+        return json_response(res)
+
+    elif action in ("cancel_restart", "cancel_reboot", "abort_restart"):
+        res = win32_controls.cancel_restart_pc()
         return json_response(res)
 
     return json_response({"status": "error", "message": f"Unknown action: {action}"}, status=400)

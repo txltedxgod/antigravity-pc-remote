@@ -718,6 +718,43 @@ function setupEvents() {
     }
   });
 
+  const btnRestartPc = document.getElementById("btnRestartPc");
+  if (btnRestartPc) btnRestartPc.addEventListener("click", () => {
+    if (confirm("⚠️ Перезагрузить ПК через 5 секунд? У вас будет возможность отменить.")) {
+      triggerAction("restart");
+      showToast("⏳ Перезагрузка через 5 сек! Нажмите «Отмена ребута», если нужно остановить.");
+    }
+  });
+
+  const btnCancelRestart = document.getElementById("btnCancelRestart");
+  if (btnCancelRestart) btnCancelRestart.addEventListener("click", () => {
+    triggerAction("cancel_restart");
+  });
+
+  // Browser Search
+  const webSearchInput = document.getElementById("webSearchInput");
+  const btnOpenWebSearch = document.getElementById("btnOpenWebSearch");
+  const handleOpenWeb = () => {
+    if (!webSearchInput) return;
+    const q = webSearchInput.value.trim();
+    if (!q) {
+      showToast("Введите URL или поисковый запрос");
+      return;
+    }
+    triggerAction("open_url", { text: q });
+    showToast(`🌐 Открываю на ПК: ${q}`);
+  };
+
+  if (btnOpenWebSearch) btnOpenWebSearch.addEventListener("click", handleOpenWeb);
+  if (webSearchInput) {
+    webSearchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        handleOpenWeb();
+      }
+    });
+  }
+
   // App Cards
   document.querySelectorAll(".app-card[data-app]").forEach(card => {
     card.addEventListener("click", () => {
