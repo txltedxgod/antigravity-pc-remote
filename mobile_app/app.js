@@ -90,23 +90,25 @@ function haptic(ms = 20) {
   } catch (e) {}
 }
 
-// Native or DOM Toast notification
-function showToast(message, duration = 2400) {
-  try {
-    if (window.AndroidBridge && typeof window.AndroidBridge.showToast === "function") {
-      window.AndroidBridge.showToast(message);
-    }
-  } catch (e) {}
-
+// Sleek, Non-Intrusive Floating Toast Notification
+let activeToastTimer = null;
+function showToast(message, duration = 2000) {
   const container = document.getElementById("toastContainer");
   if (!container) return;
+
+  container.innerHTML = "";
+  if (activeToastTimer) clearTimeout(activeToastTimer);
+
   const t = document.createElement("div");
   t.className = "toast";
   t.textContent = message;
   container.appendChild(t);
 
-  setTimeout(() => t.classList.add("show"), 20);
-  setTimeout(() => {
+  requestAnimationFrame(() => {
+    t.classList.add("show");
+  });
+
+  activeToastTimer = setTimeout(() => {
     t.classList.remove("show");
     setTimeout(() => t.remove(), 250);
   }, duration);
@@ -375,15 +377,16 @@ async function fetchChat(autoScroll = true) {
     const currentAction = res.current_action || "";
 
     if (statusPill && statusLabel) {
-      statusPill.className = "agent-live-pill " + agentStatus;
       if (agentStatus === "executing") {
+        statusPill.style.display = "flex";
+        statusPill.className = "agent-live-pill executing";
         statusLabel.textContent = "Действие...";
       } else if (agentStatus === "thinking") {
+        statusPill.style.display = "flex";
+        statusPill.className = "agent-live-pill thinking";
         statusLabel.textContent = "Думает...";
-      } else if (agentStatus === "idle") {
-        statusLabel.textContent = "Онлайн";
       } else {
-        statusLabel.textContent = "Офлайн";
+        statusPill.style.display = "none";
       }
     }
 
@@ -671,7 +674,6 @@ async function switchConversation(convId, optTitle) {
   if (feed) feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
   if (emptyState) emptyState.style.display = "none";
 
-  showToast("Переключаю диалог...");
   try {
     await apiCall("/api/antigravity/conversation/switch", "POST", { id: convId });
     await fetchChat(true);
@@ -697,10 +699,8 @@ async function startNewConversation() {
   if (feed) feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
   if (emptyState) emptyState.style.display = "flex";
 
-  showToast("Создаю новый диалог...");
   try {
     await apiCall("/api/antigravity/conversation/new", "POST");
-    showToast("✨ Новый диалог готов к сообщениям!");
     await loadConversations();
   } catch (e) {
     showToast("Ошибка создания чата");
@@ -716,14 +716,25 @@ function openSidebar() {
   if (drawer) drawer.classList.add("open");
   if (backdrop) backdrop.classList.add("active");
   loadConversations();
+  try {
+    history.pushState({ drawerOpen: true }, "");
+  } catch (e) {}
 }
 
 function closeSidebar() {
   const drawer = document.getElementById("conversationsDrawer");
   const backdrop = document.getElementById("drawerBackdrop");
-  if (drawer) drawer.classList.remove("open");
-  if (backdrop) backdrop.classList.remove("active");
+  if (drawer && drawer.classList.contains("open")) {
+    drawer.classList.remove("open");
+  }
+  if (backdrop && backdrop.classList.contains("active")) {
+    backdrop.classList.remove("active");
+  }
 }
+
+window.addEventListener("popstate", () => {
+  closeSidebar();
+});
 
 // --- TELEMETRY & STATUS ---
 async function pollStatus() {

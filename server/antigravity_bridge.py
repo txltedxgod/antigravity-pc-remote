@@ -11,6 +11,7 @@ import logging
 import ctypes
 import os
 import re
+import sqlite3
 from pathlib import Path
 from ctypes import wintypes
 
@@ -23,6 +24,7 @@ DEFAULT_CDP_PORT = 60382
 ANTIGRAVITY_EXE = r"C:\Users\dev\AppData\Local\Programs\antigravity\Antigravity.exe"
 DEVTOOLS_PORT_FILE = os.path.expandvars(r"%APPDATA%\Antigravity\DevToolsActivePort")
 BRAIN_DIR = Path(os.path.expandvars(r"%USERPROFILE%\.gemini\antigravity\brain"))
+ANTIGRAVITY_DIR = BRAIN_DIR.parent
 
 def get_active_cdp_port(fallback=DEFAULT_CDP_PORT):
     """Dynamically retrieves the active DevTools port from Electron's DevToolsActivePort file."""
@@ -117,6 +119,25 @@ _conv_cache = {
     "items": []
 }
 
+def load_official_conversation_titles():
+    """Reads official human-readable conversation titles from Antigravity's conversation_summaries.db."""
+    db_path = ANTIGRAVITY_DIR / "conversation_summaries.db"
+    if not db_path.exists():
+        return {}
+    titles = {}
+    try:
+        uri = f"file:{db_path.as_posix()}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=1.0) as con:
+            cur = con.cursor()
+            rows = cur.execute("SELECT conversation_id, title, preview FROM conversation_summaries").fetchall()
+            for cid, title, preview in rows:
+                clean_t = (title or preview or "").strip()
+                if clean_t:
+                    titles[cid] = clean_t
+    except Exception as e:
+        logger.debug(f"Failed to read conversation_summaries.db: {e}")
+    return titles
+
 def get_all_brain_conversations(cache_ttl=4.0):
     """Scans BRAIN_DIR for all conversation folders, extracts clean title and timestamps."""
     global _conv_cache
@@ -124,6 +145,7 @@ def get_all_brain_conversations(cache_ttl=4.0):
     if _conv_cache["items"] and (now - _conv_cache["timestamp"] < cache_ttl):
         return [dict(x) for x in _conv_cache["items"]]
 
+    db_titles = load_official_conversation_titles()
     convs = []
     try:
         if BRAIN_DIR.exists():
@@ -138,26 +160,30 @@ def get_all_brain_conversations(cache_ttl=4.0):
                 except Exception:
                     mtime = d.stat().st_mtime
 
-                title = ""
-                try:
-                    with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-                        for line in f:
-                            if '"type":"USER_INPUT"' in line:
-                                obj = json.loads(line)
-                                raw = obj.get("content", "")
-                                if isinstance(raw, list):
-                                    parts = [p.get("text", "") for p in raw if isinstance(p, dict)]
-                                    raw = " ".join(parts)
-                                if "<USER_REQUEST>" in raw:
-                                    m = re.search(r"<USER_REQUEST>(.*?)</USER_REQUEST>", raw, re.DOTALL)
-                                    if m:
-                                        raw = m.group(1)
-                                title = clean_user_text(raw).replace("\n", " ").strip()
-                                title = re.sub(r"\s+", " ", title)[:70]
-                                if title:
-                                    break
-                except Exception:
-                    pass
+                # 1. First priority: official title from Antigravity summaries database
+                title = db_titles.get(d.name, "")
+
+                # 2. Fallback: parse first user input cleanly
+                if not title:
+                    try:
+                        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+                            for line in f:
+                                if '"type":"USER_INPUT"' in line:
+                                    obj = json.loads(line)
+                                    raw = obj.get("content", "")
+                                    if isinstance(raw, list):
+                                        parts = [p.get("text", "") for p in raw if isinstance(p, dict)]
+                                        raw = " ".join(parts)
+                                    if "<USER_REQUEST>" in raw:
+                                        m = re.search(r"<USER_REQUEST>(.*?)</USER_REQUEST>", raw, re.DOTALL)
+                                        if m:
+                                            raw = m.group(1)
+                                    title = clean_user_text(raw).replace("\n", " ").strip()
+                                    title = re.sub(r"\s+", " ", title)[:60]
+                                    if title:
+                                        break
+                    except Exception:
+                        pass
 
                 if not title:
                     title = f"Диалог {d.name[:8]}"
@@ -448,16 +474,20 @@ def parse_conversation_history(conv_id, limit=50):
             ltype = last.get("type")
             lstatus = last.get("status")
             if ltype == "PLANNER_RESPONSE":
-                if last.get("content"):
+                tool_calls = last.get("tool_calls", [])
+                if tool_calls:
+                    agent_status = "executing"
+                    tool = tool_calls[0]
+                    current_action = tool.get("args", {}).get("toolSummary", tool.get("name", "Команда"))
+                elif lstatus == "DONE":
                     agent_status = "idle"
                     current_action = ""
-                elif last.get("tool_calls"):
-                    agent_status = "executing"
-                    tool = last["tool_calls"][0]
-                    current_action = tool.get("args", {}).get("toolSummary", tool.get("name", "Команда"))
-                else:
+                elif last.get("thinking"):
                     agent_status = "thinking"
                     current_action = "Размышляет..."
+                else:
+                    agent_status = "idle"
+                    current_action = ""
             elif ltype == "GENERIC":
                 if lstatus != "DONE":
                     agent_status = "executing"
@@ -465,6 +495,9 @@ def parse_conversation_history(conv_id, limit=50):
                 else:
                     agent_status = "idle"
                     current_action = ""
+            elif ltype == "USER_INPUT":
+                agent_status = "thinking"
+                current_action = "Размышляет..."
 
         if limit and len(messages) > limit:
             messages = messages[-limit:]
@@ -491,6 +524,7 @@ def parse_conversation_history(conv_id, limit=50):
 async def check_agent_active_status_cdp(target=None, port=None):
     """
     Directly queries Antigravity DOM via Chrome DevTools Protocol.
+    Excludes sidebar background tasks so status strictly reflects the active chat.
     Returns (is_running: bool, current_action: str) based on actual live DOM.
     """
     try:
@@ -505,8 +539,9 @@ async def check_agent_active_status_cdp(target=None, port=None):
             async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=1.2)) as ws:
                 js = """
                 (() => {
-                    const stopBtn = document.querySelector('button[aria-label="Stop execution"], button[title="Stop execution"]');
-                    return { isRunning: !!stopBtn };
+                    const allStopBtns = Array.from(document.querySelectorAll('button[aria-label="Stop execution"], button[title="Stop execution"], button[aria-label="Stop"]'));
+                    const activeStopBtn = allStopBtns.find(b => !b.closest('[class*="sidebar"], aside, nav, [data-testid="conversation-row-sidebar"]'));
+                    return { isRunning: !!activeStopBtn };
                 })()
                 """
                 await ws.send_str(json.dumps({
