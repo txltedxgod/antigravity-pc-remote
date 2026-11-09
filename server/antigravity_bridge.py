@@ -1048,9 +1048,10 @@ async def capture_pc_screenshot():
             mon = sct.monitors[1]
             sct_img = sct.grab(mon)
             img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-            img.thumbnail((1280, 720), Image.Resampling.LANCZOS)
+            if img.width > 1920:
+                img.thumbnail((1920, 1080), Image.Resampling.LANCZOS)
             buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=70)
+            img.save(buf, format="JPEG", quality=82)
             b64 = base64.b64encode(buf.getvalue()).decode("ascii")
             return f"data:image/jpeg;base64,{b64}", "desktop"
     except Exception as e:
@@ -1067,7 +1068,7 @@ async def capture_pc_screenshot():
                         await ws.send_str(json.dumps({
                             "id": 901,
                             "method": "Page.captureScreenshot",
-                            "params": {"format": "jpeg", "quality": 70}
+                            "params": {"format": "jpeg", "quality": 82}
                         }))
                         while True:
                             r = await ws.receive_json()

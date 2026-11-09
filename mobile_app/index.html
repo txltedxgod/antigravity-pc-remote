@@ -871,17 +871,33 @@
     </div>
   </div>
 
-  <!-- Fullscreen Image Preview Modal -->
+  <!-- Fullscreen Interactive Zoom Image Preview Modal -->
   <div class="image-modal-backdrop" id="imageModal" style="display: none;">
     <div class="image-modal-card">
       <div class="image-modal-header">
-        <span class="image-modal-title" id="imageModalTitle">Снимок экрана</span>
-        <button class="icon-btn-sm" id="btnCloseImageModal" title="Закрыть просмотр" type="button">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-        </button>
+        <div class="image-modal-header-left">
+          <span class="image-modal-title" id="imageModalTitle">Снимок экрана</span>
+        </div>
+        <div class="image-modal-actions">
+          <div class="zoom-controls-group">
+            <button class="zoom-btn" id="btnZoomOut" title="Уменьшить (Zoom -)" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            </button>
+            <button class="zoom-level-pill" id="btnZoomReset" title="Сбросить масштаб (100%)" type="button">100%</button>
+            <button class="zoom-btn" id="btnZoomIn" title="Увеличить (Zoom +)" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            </button>
+          </div>
+          <button class="icon-btn-sm" id="btnCloseImageModal" title="Закрыть просмотр" type="button">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
       </div>
-      <div class="image-modal-body">
-        <img id="imageModalImg" src="" alt="Fullscreen Screenshot">
+      <div class="image-modal-body" id="imageModalBody">
+        <div class="image-zoom-viewport" id="imageZoomViewport">
+          <img id="imageModalImg" src="" alt="Fullscreen Screenshot" draggable="false">
+        </div>
+        <div class="image-zoom-hint" id="imageZoomHint">Двойной тап или щипок пальцами для зума</div>
       </div>
     </div>
   </div>

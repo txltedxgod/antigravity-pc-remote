@@ -13,3 +13,5 @@ build/
 cloudflared.exe
 .DS_Store
 Thumbs.db
+uploads/
+
