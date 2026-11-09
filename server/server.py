@@ -269,11 +269,47 @@ async def handle_antigravity_send(request):
         return json_response({"status": "error", "message": "Invalid JSON"}, status=400)
 
     prompt = body.get("text", "")
+    image_data = body.get("image", None)
     focus_win = bool(body.get("focus", False))
     conv_id = body.get("conversation_id", None)
-    logger.info(f"Injecting prompt to Antigravity ({len(prompt)} chars, conv: {conv_id})...")
 
-    res = await antigravity_bridge.send_prompt_to_antigravity(prompt, conv_id=conv_id, focus_window=focus_win)
+    image_path = None
+    if image_data:
+        try:
+            uploads_dir = SERVER_DIR.parent / "uploads"
+            uploads_dir.mkdir(parents=True, exist_ok=True)
+            import base64
+            import time
+
+            if "," in image_data:
+                header, b64_str = image_data.split(",", 1)
+                ext = "png"
+                if "jpeg" in header or "jpg" in header:
+                    ext = "jpg"
+                elif "webp" in header:
+                    ext = "webp"
+            else:
+                b64_str = image_data
+                ext = "png"
+
+            img_bytes = base64.b64decode(b64_str)
+            filename = f"screenshot_{int(time.time() * 1000)}.{ext}"
+            saved_file = uploads_dir / filename
+            with open(saved_file, "wb") as f:
+                f.write(img_bytes)
+            image_path = str(saved_file.resolve())
+            logger.info(f"Saved uploaded screenshot to: {image_path} ({len(img_bytes)} bytes)")
+        except Exception as e:
+            logger.error(f"Failed to decode uploaded image: {e}")
+
+    logger.info(f"Injecting prompt to Antigravity ({len(prompt)} chars, img: {bool(image_path)}, conv: {conv_id})...")
+
+    res = await antigravity_bridge.send_prompt_to_antigravity(
+        prompt, 
+        image_path=image_path, 
+        conv_id=conv_id, 
+        focus_window=focus_win
+    )
     return json_response(res)
 
 async def handle_download_apk(request):

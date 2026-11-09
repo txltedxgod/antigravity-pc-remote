@@ -1,6 +1,7 @@
 /**
- * Antigravity PC Remote 2.0 - Client Application Logic
- * Real-time AI chat stream, smart agent telemetry, PC hardware controls.
+ * Antigravity PC Remote 3.0 - Client Application Logic
+ * ChatGPT Minimalist Monochrome Edition
+ * Screenshot pasting/attaching, truthful live status, PC hardware controls.
  */
 
 // Global Configuration & State
@@ -16,6 +17,10 @@ let currentConvId = "";
 let lastMessageCount = 0;
 let isSwitchingConv = false;
 let isSendingPrompt = false;
+
+// Active screenshot attachment
+let currentAttachedImage = null; // Base64 dataURL
+let currentAttachedFileName = "";
 
 let chatPollTimer = null;
 let statusPollTimer = null;
@@ -131,7 +136,7 @@ async function apiCall(path, method = "GET", body = null) {
   } catch (err) {
     clearTimeout(timeoutId);
 
-    // Intelligent Auto-Fallback: if local Wi-Fi drops or unreachable, seamlessly retry via Cloudflare
+    // Intelligent Auto-Fallback: if local Wi-Fi drops or unreachable, retry via Cloudflare
     if (isLocalHost) {
       let targetCloud = cloudUrl;
       if (!targetCloud) {
@@ -156,7 +161,6 @@ async function apiCall(path, method = "GET", body = null) {
         } catch (e) {}
       }
 
-      // If stored cloudUrl also failed, force discover fresh URL from GitHub:
       const freshCloud = await discoverCloudUrl(true);
       if (freshCloud && freshCloud !== targetCloud) {
         try {
@@ -231,7 +235,6 @@ function renderMarkdown(md) {
   text = text.replace(/\n/g, '<br>');
   text = `<p>${text}</p>`;
 
-  // Clean empty paragraphs
   text = text.replace(/<p>\s*<\/p>/g, '');
 
   // 10. Restore code blocks with 1-click Copy button
@@ -240,11 +243,11 @@ function renderMarkdown(md) {
     const escapedCode = escapeHtml(item.code);
     const htmlBlock = `
       <div class="code-block">
-        <div class="code-header">
+        <div class="code-header" style="display: flex; justify-content: space-between; align-items: center; padding: 4px 8px; background: #1c1c1f; border-bottom: 1px solid #27272a; border-radius: 6px 6px 0 0; font-size: 11px; color: #a1a1aa;">
           <span class="code-lang">${escapeHtml(item.lang)}</span>
-          <button class="btn-copy-code" data-code="${encodeURIComponent(item.code)}">📋 Скопировать</button>
+          <button class="btn-copy-code" data-code="${encodeURIComponent(item.code)}" style="background: transparent; border: 1px solid #27272a; color: #f4f4f5; font-size: 11px; padding: 2px 6px; border-radius: 4px; cursor: pointer;">Скопировать</button>
         </div>
-        <pre><code>${escapedCode}</code></pre>
+        <pre style="margin: 0; padding: 10px; background: #141416; border-radius: 0 0 6px 6px; overflow-x: auto;"><code>${escapedCode}</code></pre>
       </div>
     `;
     text = text.replace(placeholder, htmlBlock);
@@ -260,7 +263,6 @@ document.addEventListener("click", (e) => {
     if (!code) return;
     haptic(25);
     
-    // Copy to clipboard
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(code).then(() => {
         showToast("Код скопирован в буфер!");
@@ -277,6 +279,57 @@ document.addEventListener("click", (e) => {
   }
 });
 
+// --- SCREENSHOT & IMAGE ATTACHMENT LOGIC ---
+function attachImageFile(file) {
+  if (!file || !file.type || !file.type.startsWith("image/")) {
+    showToast("Пожалуйста, прикрепите изображение (PNG, JPG, WEBP)");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    currentAttachedImage = e.target.result;
+    currentAttachedFileName = file.name || "screenshot.png";
+    
+    const previewContainer = document.getElementById("imagePreviewContainer");
+    const previewImg = document.getElementById("imagePreviewImg");
+    const previewName = document.getElementById("previewFileName");
+    
+    if (previewImg) previewImg.src = currentAttachedImage;
+    if (previewName) previewName.textContent = currentAttachedFileName;
+    if (previewContainer) previewContainer.style.display = "flex";
+    
+    updateSendButtonState();
+    haptic(30);
+    showToast("📸 Скриншот прикреплен!");
+  };
+  reader.readAsDataURL(file);
+}
+
+function clearAttachedImage() {
+  currentAttachedImage = null;
+  currentAttachedFileName = "";
+  const previewContainer = document.getElementById("imagePreviewContainer");
+  const previewImg = document.getElementById("imagePreviewImg");
+  const fileInput = document.getElementById("imageFileInput");
+  if (previewImg) previewImg.src = "";
+  if (previewContainer) previewContainer.style.display = "none";
+  if (fileInput) fileInput.value = "";
+  updateSendButtonState();
+}
+
+function updateSendButtonState() {
+  const input = document.getElementById("promptInput");
+  const btn = document.getElementById("btnSendPrompt");
+  if (!btn) return;
+  const hasText = input && input.value.trim().length > 0;
+  const hasImage = !!currentAttachedImage;
+  if (hasText || hasImage) {
+    btn.classList.add("active");
+  } else {
+    btn.classList.remove("active");
+  }
+}
+
 // --- CHAT LOGIC ---
 async function fetchChat(autoScroll = true) {
   const feed = document.getElementById("chatFeed");
@@ -290,7 +343,10 @@ async function fetchChat(autoScroll = true) {
   try {
     const params = currentConvId ? `?conversation_id=${encodeURIComponent(currentConvId)}` : "";
     const res = await apiCall(`/api/antigravity/chat${params}`);
-    if (!res || res.status !== "ok") return;
+    if (!res || res.status !== "ok") {
+      if (activityBanner && !isSendingPrompt) activityBanner.style.display = "none";
+      return;
+    }
 
     if (currentConvId === "new") {
       if (res.conversation_id && res.conversation_id !== "new") {
@@ -300,6 +356,7 @@ async function fetchChat(autoScroll = true) {
         if (emptyState) emptyState.style.display = "flex";
         feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
         lastMessageCount = 0;
+        if (activityBanner) activityBanner.style.display = "none";
         return;
       }
     } else if (res.conversation_id && !currentConvId) {
@@ -325,12 +382,13 @@ async function fetchChat(autoScroll = true) {
       }
     }
 
-    // Update Activity Banner
+    // Truthful Activity Banner: only show when genuinely executing / thinking
     if (activityBanner && activityText) {
       if (agentStatus === "executing" || agentStatus === "thinking") {
         activityBanner.style.display = "flex";
-        activityText.textContent = currentAction ? `⚙️ ${currentAction}` : "Агент выполняет задачу...";
+        activityText.textContent = currentAction ? currentAction : (agentStatus === "thinking" ? "Размышляет..." : "Агент выполняет задачу...");
       } else {
+        // Absolutely idle: immediately hide banner
         activityBanner.style.display = "none";
       }
     }
@@ -351,7 +409,6 @@ async function fetchChat(autoScroll = true) {
       lastMessageCount = messages.length;
       isSendingPrompt = false;
 
-      // Keep emptyState element, remove old bubbles
       feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
 
       messages.forEach(msg => {
@@ -367,8 +424,15 @@ async function fetchChat(autoScroll = true) {
         }
 
         if (msg.role === "user") {
+          let imgTag = "";
+          if (msg.has_image) {
+            imgTag = `<div style="font-size: 11px; color: #a1a1aa; margin-bottom: 4px; display: flex; align-items: center; gap: 4px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg> Скриншот прикреплен</div>`;
+          }
           bubble.innerHTML = `
-            <div class="msg-bubble-user">${escapeHtml(msg.text)}</div>
+            <div class="msg-bubble-user">
+              ${imgTag}
+              <div>${escapeHtml(msg.text)}</div>
+            </div>
             <div class="msg-meta">${timeStr}</div>
           `;
         } else {
@@ -390,11 +454,11 @@ async function fetchChat(autoScroll = true) {
       }
     }
   } catch (err) {
-    // Network fail or PC sleep
+    if (activityBanner && !isSendingPrompt) activityBanner.style.display = "none";
   }
 }
 
-// Send Prompt to Antigravity
+// Send Prompt to Antigravity (Supports text and screenshots)
 async function sendPrompt() {
   const input = document.getElementById("promptInput");
   const chkFocus = document.getElementById("chkFocusWindow");
@@ -402,8 +466,10 @@ async function sendPrompt() {
   if (!input || !btn) return;
 
   const text = input.value.trim();
-  if (!text) {
-    showToast("Введи текст сообщения");
+  const attachedImg = currentAttachedImage;
+
+  if (!text && !attachedImg) {
+    showToast("Введи текст сообщения или прикрепи скриншот");
     return;
   }
 
@@ -420,17 +486,25 @@ async function sendPrompt() {
     const bubble = document.createElement("div");
     bubble.className = "chat-msg msg-user";
     const nowStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    let imageHtml = "";
+    if (attachedImg) {
+      imageHtml = `<img class="msg-attachment-thumb" src="${attachedImg}" alt="Attached Screenshot">`;
+    }
     bubble.innerHTML = `
-      <div class="msg-bubble-user">${escapeHtml(text)}</div>
+      <div class="msg-bubble-user">
+        ${imageHtml}
+        ${text ? `<div>${escapeHtml(text)}</div>` : ""}
+      </div>
       <div class="msg-meta">${nowStr}</div>
     `;
     feed.appendChild(bubble);
     feed.scrollTop = feed.scrollHeight;
   }
 
-  // Clear input
+  // Clear input & reset attachment
   input.value = "";
   input.style.height = "auto";
+  clearAttachedImage();
 
   // Show activity banner right away
   const activityBanner = document.getElementById("agentActivityBanner");
@@ -444,6 +518,7 @@ async function sendPrompt() {
     const isNew = (currentConvId === "new");
     const res = await apiCall("/api/antigravity/send", "POST", {
       text: text,
+      image: attachedImg,
       focus: chkFocus ? chkFocus.checked : false,
       conversation_id: isNew ? "new" : (currentConvId || null)
     });
@@ -458,16 +533,19 @@ async function sendPrompt() {
         }, 2200);
       } else {
         for (let i = 1; i <= 6; i++) {
-          setTimeout(() => fetchChat(true), i * 800);
+          setTimeout(() => fetchChat(true), i * 750);
         }
       }
     } else {
       showToast("Ошибка: " + (res.message || "Не удалось отправить"));
+      if (activityBanner) activityBanner.style.display = "none";
     }
   } catch (e) {
     showToast("Ошибка связи с сервером Antigravity");
+    if (activityBanner) activityBanner.style.display = "none";
   } finally {
     btn.disabled = false;
+    updateSendButtonState();
   }
 }
 
@@ -488,13 +566,13 @@ async function loadConversations() {
     // Auto active option
     const optCurrent = document.createElement("option");
     optCurrent.value = "";
-    optCurrent.textContent = "● Текущий активный чат";
+    optCurrent.textContent = "● Активный чат";
     select.appendChild(optCurrent);
 
     // New conversation option
     const optNew = document.createElement("option");
     optNew.value = "new";
-    optNew.textContent = "✨ + Новый диалог...";
+    optNew.textContent = "+ Новый диалог...";
     if (currentVal === "new") {
       optNew.selected = true;
     }
@@ -505,7 +583,7 @@ async function loadConversations() {
       opt.value = c.id;
       opt.textContent = c.title + (c.isCurrent ? " (активен)" : "");
       if (currentVal === "new") {
-        // Do not select any past conversation if in new conversation mode
+        // keep new
       } else if (c.isCurrent && !currentVal) {
         opt.selected = true;
         currentConvId = c.id;
@@ -598,10 +676,10 @@ function setConnectionState(online) {
   if (!badge || !text) return;
 
   if (online) {
-    badge.className = "connection-pill online";
-    text.textContent = `${config.host}:${config.port}`;
+    badge.className = "connection-pill connected";
+    text.textContent = "ПК онлайн";
   } else {
-    badge.className = "connection-pill offline";
+    badge.className = "connection-pill disconnected";
     text.textContent = "Офлайн";
   }
 }
@@ -641,33 +719,17 @@ async function fetchActiveWindows() {
       const item = document.createElement("div");
       item.className = "window-item";
 
-      let icon = "🪟";
-      const p = (w.process_name || "").toLowerCase();
-      const t = (w.title || "").toLowerCase();
-      if (p.includes("ghost") || t.includes("ghost")) icon = "👻";
-      else if (p.includes("cs2") || t.includes("counter-strike")) icon = "🔫";
-      else if (p.includes("dota") || t.includes("dota")) icon = "🛡️";
-      else if (p.includes("taxi")) icon = "🚖";
-      else if (p.includes("rust")) icon = "🎯";
-      else if (p.includes("banana")) icon = "🍌";
-      else if (p.includes("chrome") || p.includes("firefox") || p.includes("edge")) icon = "🌐";
-      else if (p.includes("telegram")) icon = "💬";
-      else if (p.includes("discord")) icon = "🎙️";
-      else if (p.includes("steam")) icon = "🎮";
-      else if (p.includes("spotify")) icon = "🎵";
-      else if (p.includes("terminal") || p.includes("cmd") || p.includes("powershell")) icon = "💻";
-
       item.innerHTML = `
-        <div class="window-item-left">
-          <div class="window-icon-badge">${icon}</div>
-          <div class="window-info">
+        <div style="display: flex; align-items: center; gap: 8px; flex: 1; overflow: hidden;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--text-secondary); flex-shrink: 0;"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line></svg>
+          <div style="display: flex; flex-direction: column; overflow: hidden;">
             <span class="window-title" title="${escapeHtml(w.title)}">${escapeHtml(w.title)}</span>
-            <span class="window-pname">${escapeHtml(w.process_name || "pid: " + w.pid)}</span>
+            <span style="font-size: 10px; color: var(--text-muted);">${escapeHtml(w.process_name || "pid: " + w.pid)}</span>
           </div>
         </div>
         <div class="window-actions">
-          <button class="btn-window-action btn-window-focus" title="Вывести на экран">Фокус</button>
-          <button class="btn-window-action btn-window-kill" title="Закрыть программу">Закрыть</button>
+          <button class="btn-win-action btn-window-focus" title="Вывести на экран">Фокус</button>
+          <button class="btn-win-action btn-window-kill" title="Закрыть окно">Закрыть</button>
         </div>
       `;
 
@@ -678,7 +740,7 @@ async function fetchActiveWindows() {
 
       item.querySelector(".btn-window-kill").addEventListener("click", () => {
         triggerAction("close_window", { hwnd: w.hwnd, force: true });
-        showToast(`🛑 Закрыто: ${w.process_name || w.title.slice(0, 15)}`);
+        showToast(`Закрыто: ${w.process_name || w.title.slice(0, 15)}`);
         setTimeout(fetchActiveWindows, 600);
       });
 
@@ -749,12 +811,13 @@ function setupEvents() {
     });
   });
 
-  // Prompt Auto-resize Textarea
+  // Prompt Textarea & Auto-resize
   const promptInput = document.getElementById("promptInput");
   if (promptInput) {
     promptInput.addEventListener("input", () => {
       promptInput.style.height = "auto";
-      promptInput.style.height = Math.min(promptInput.scrollHeight, 100) + "px";
+      promptInput.style.height = Math.min(promptInput.scrollHeight, 120) + "px";
+      updateSendButtonState();
     });
 
     promptInput.addEventListener("keydown", (e) => {
@@ -769,6 +832,46 @@ function setupEvents() {
   const btnSend = document.getElementById("btnSendPrompt");
   if (btnSend) btnSend.addEventListener("click", sendPrompt);
 
+  // File Attachment & Image Picking
+  const btnAttach = document.getElementById("btnAttach");
+  const fileInput = document.getElementById("imageFileInput");
+  const btnRemoveAttach = document.getElementById("btnRemoveAttachment");
+
+  if (btnAttach && fileInput) {
+    btnAttach.addEventListener("click", () => {
+      haptic(20);
+      fileInput.click();
+    });
+    fileInput.addEventListener("change", (e) => {
+      if (e.target.files && e.target.files[0]) {
+        attachImageFile(e.target.files[0]);
+      }
+    });
+  }
+
+  if (btnRemoveAttach) {
+    btnRemoveAttach.addEventListener("click", () => {
+      haptic(15);
+      clearAttachedImage();
+    });
+  }
+
+  // Clipboard Paste Listener (Ctrl+V / Mobile Paste)
+  window.addEventListener("paste", (e) => {
+    if (!e.clipboardData || !e.clipboardData.items) return;
+    const items = e.clipboardData.items;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf("image") !== -1) {
+        e.preventDefault();
+        const file = items[i].getAsFile();
+        if (file) {
+          attachImageFile(file);
+          break;
+        }
+      }
+    }
+  });
+
   // Quick Chips
   document.querySelectorAll(".chip[data-prompt]").forEach(chip => {
     chip.addEventListener("click", () => {
@@ -778,6 +881,7 @@ function setupEvents() {
         promptInput.value = text;
         promptInput.focus();
         promptInput.style.height = "auto";
+        updateSendButtonState();
       }
     });
   });
@@ -795,7 +899,7 @@ function setupEvents() {
         const emptyState = document.getElementById("chatEmptyState");
         if (feed) feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
         if (emptyState) emptyState.style.display = "flex";
-        showToast("Создаю новый диалог в IDE...");
+        showToast("Создаю новый диалог...");
         try {
           await apiCall("/api/antigravity/conversation/new", "POST");
           showToast("✨ Новый диалог готов к сообщениям!");
@@ -830,7 +934,6 @@ function setupEvents() {
       currentConvId = "new";
       lastMessageCount = 0;
 
-      // Instantly clear feed and show empty state
       const feed = document.getElementById("chatFeed");
       const emptyState = document.getElementById("chatEmptyState");
       if (feed) feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
@@ -839,10 +942,10 @@ function setupEvents() {
       const convSelect = document.getElementById("conversationSelect");
       if (convSelect) convSelect.value = "new";
 
-      showToast("Создаю новый диалог в IDE...");
+      showToast("Создаю новый диалог...");
       try {
         await apiCall("/api/antigravity/conversation/new", "POST");
-        showToast("✨ Новый диалог готов к сообщениям!");
+        showToast("✨ Новый диалог готов!");
         loadConversations();
       } catch (e) {
         showToast("Ошибка создания чата");
@@ -857,9 +960,8 @@ function setupEvents() {
   if (btnWol) {
     btnWol.addEventListener("click", () => {
       haptic(40);
-      let sent = false;
       if (window.AndroidBridge && typeof window.AndroidBridge.sendWakeOnLan === "function") {
-        sent = window.AndroidBridge.sendWakeOnLan(config.mac || "A83B7676208F");
+        window.AndroidBridge.sendWakeOnLan(config.mac || "A83B7676208F");
       }
       showToast("📡 Пакет WoL отправлен! Проверяем ПК...");
       for (let i = 1; i <= 8; i++) {
@@ -1029,7 +1131,7 @@ function setupEvents() {
         box.style.display = "block";
         disp.value = cloudUrl;
       }
-      modal.classList.add("open");
+      modal.classList.add("active");
     });
   }
 
@@ -1065,7 +1167,7 @@ function setupEvents() {
   if (btnCancel && modal) {
     btnCancel.addEventListener("click", () => {
       haptic(15);
-      modal.classList.remove("open");
+      modal.classList.remove("active");
     });
   }
 
@@ -1082,7 +1184,7 @@ function setupEvents() {
         config.port = newPort;
         localStorage.setItem("pc_remote_port", newPort);
       }
-      modal.classList.remove("open");
+      modal.classList.remove("active");
       showToast("Настройки сохранены. Проверка связи...");
       pollStatus();
       fetchChat(true);

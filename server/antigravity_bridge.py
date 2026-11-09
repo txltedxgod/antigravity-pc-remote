@@ -1,7 +1,7 @@
 """
 Antigravity IDE Bridge.
 Communicates directly with Antigravity 2.0 Electron instance via Chrome DevTools Protocol (CDP)
-and Win32 focus fallback to inject prompts and monitor agent status.
+and Win32 focus fallback to inject prompts, attach screenshot files, and monitor truthful agent status.
 """
 
 import asyncio
@@ -148,13 +148,15 @@ async def get_conversations_list(port=None):
                     "method": "Runtime.evaluate",
                     "params": {"expression": js, "returnByValue": True}
                 }))
-                reply = await ws.receive_json()
-                data = reply.get("result", {}).get("result", {}).get("value", {})
-                return {
-                    "status": "ok",
-                    "current_url": data.get("currentUrl", ""),
-                    "conversations": data.get("conversations", [])
-                }
+                while True:
+                    reply = await ws.receive_json()
+                    if reply.get("id") == 201:
+                        data = reply.get("result", {}).get("result", {}).get("value", {})
+                        return {
+                            "status": "ok",
+                            "current_url": data.get("currentUrl", ""),
+                            "conversations": data.get("conversations", [])
+                        }
     except Exception as e:
         logger.error(f"Error fetching conversations: {e}")
         return {"status": "error", "message": str(e), "conversations": []}
@@ -189,7 +191,10 @@ async def switch_conversation(conv_id, port=None):
                     "method": "Runtime.evaluate",
                     "params": {"expression": js, "returnByValue": True}
                 }))
-                reply = await ws.receive_json()
+                while True:
+                    reply = await ws.receive_json()
+                    if reply.get("id") == 202:
+                        break
                 await asyncio.sleep(1.2)
                 return {"status": "ok", "message": f"Switched to {conv_id}"}
     except Exception as e:
@@ -225,7 +230,10 @@ async def create_new_conversation(port=None):
                     "method": "Runtime.evaluate",
                     "params": {"expression": js, "returnByValue": True}
                 }))
-                reply = await ws.receive_json()
+                while True:
+                    reply = await ws.receive_json()
+                    if reply.get("id") == 203:
+                        break
                 await asyncio.sleep(1.0)
                 return {"status": "ok", "message": "New conversation initiated"}
     except Exception as e:
@@ -283,7 +291,6 @@ async def get_active_conversation_id(port=None):
                 if parts:
                     return parts
             else:
-                # Active page in Antigravity has no /c/ -> explicitly in new blank conversation
                 return "new"
     except Exception:
         pass
@@ -372,11 +379,13 @@ def parse_conversation_history(conv_id, limit=50):
                 
                 clean_text = clean_user_text(raw_content)
                 if clean_text:
+                    media_list = step.get("media", [])
                     messages.append({
                         "id": f"msg_u_{abs_index}",
                         "role": "user",
                         "text": clean_text,
-                        "created_at": step.get("created_at", "")
+                        "created_at": step.get("created_at", ""),
+                        "has_image": len(media_list) > 0
                     })
 
             elif step_type == "PLANNER_RESPONSE":
@@ -408,8 +417,12 @@ def parse_conversation_history(conv_id, limit=50):
         if parsed_steps:
             last = parsed_steps[-1]
             ltype = last.get("type")
-            if ltype == "PLANNER_RESPONSE" and not last.get("content"):
-                if last.get("tool_calls"):
+            lstatus = last.get("status")
+            if ltype == "PLANNER_RESPONSE":
+                if last.get("content"):
+                    agent_status = "idle"
+                    current_action = ""
+                elif last.get("tool_calls"):
                     agent_status = "executing"
                     tool = last["tool_calls"][0]
                     current_action = tool.get("args", {}).get("toolSummary", tool.get("name", "Команда"))
@@ -417,8 +430,12 @@ def parse_conversation_history(conv_id, limit=50):
                     agent_status = "thinking"
                     current_action = "Размышляет..."
             elif ltype == "GENERIC":
-                agent_status = "executing"
-                current_action = "Обрабатывает результат..."
+                if lstatus != "DONE":
+                    agent_status = "executing"
+                    current_action = "Обрабатывает результат..."
+                else:
+                    agent_status = "idle"
+                    current_action = ""
 
         if limit and len(messages) > limit:
             messages = messages[-limit:]
@@ -442,10 +459,54 @@ def parse_conversation_history(conv_id, limit=50):
             "messages": []
         }
 
+async def check_agent_active_status_cdp(target=None, port=None):
+    """
+    Directly queries Antigravity DOM via Chrome DevTools Protocol.
+    Returns (is_running: bool, current_action: str) based on actual live DOM.
+    """
+    try:
+        if not target:
+            target = await find_antigravity_target(port)
+        if not target:
+            return False, ""
+        ws_url = target.get("webSocketDebuggerUrl")
+        if not ws_url:
+            return False, ""
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=1.2)) as ws:
+                js = """
+                (() => {
+                    const stopBtn = document.querySelector('button[aria-label="Stop execution"], button[title="Stop execution"]');
+                    return { isRunning: !!stopBtn };
+                })()
+                """
+                await ws.send_str(json.dumps({
+                    "id": 401,
+                    "method": "Runtime.evaluate",
+                    "params": {"expression": js, "returnByValue": True}
+                }))
+                while True:
+                    r = await ws.receive_json()
+                    if r.get("id") == 401:
+                        val = r.get("result", {}).get("result", {}).get("value", {})
+                        return val.get("isRunning", False), ""
+    except Exception as e:
+        logger.debug(f"CDP status check failed: {e}")
+        return False, ""
+
 async def get_conversation_chat(conv_id=None, limit=50, port=None):
-    """Asynchronously retrieves chat messages and real-time status for the conversation."""
+    """Asynchronously retrieves chat messages and truthful real-time status for the conversation."""
+    target = await find_antigravity_target(port)
     if not conv_id or conv_id == "active":
-        conv_id = await get_active_conversation_id(port)
+        if target:
+            url = target.get("url", "")
+            if "/c/" in url:
+                conv_id = url.split("/c/")[1].split("?")[0].strip("/")
+            else:
+                conv_id = "new"
+        if not conv_id:
+            conv_id = await get_active_conversation_id(port)
+
     if not conv_id or conv_id == "new":
         return {
             "status": "ok",
@@ -454,15 +515,94 @@ async def get_conversation_chat(conv_id=None, limit=50, port=None):
             "current_action": "",
             "messages": []
         }
-    return parse_conversation_history(conv_id, limit=limit)
 
-async def send_prompt_to_antigravity(prompt_text, conv_id=None, focus_window=False, port=None):
+    chat_data = parse_conversation_history(conv_id, limit=limit)
+
+    # Truthful status check via live CDP inspection
+    if target:
+        is_running, _ = await check_agent_active_status_cdp(target=target, port=port)
+        if not is_running:
+            # Absolute physical truth: Stop button does NOT exist in Antigravity UI -> agent is IDLE!
+            chat_data["agent_status"] = "idle"
+            chat_data["current_action"] = ""
+        else:
+            chat_data["agent_status"] = "executing"
+            if not chat_data.get("current_action"):
+                chat_data["current_action"] = "Выполняет задачу..."
+    else:
+        if chat_data["agent_status"] not in ("executing", "thinking"):
+            chat_data["agent_status"] = "idle"
+
+    return chat_data
+
+async def attach_file_to_composer(ws, file_path):
+    """Sets files on the Antigravity hidden file input via CDP DOM.setFileInputFiles."""
+    try:
+        # Step 1: Enable DOM
+        await ws.send_str(json.dumps({"id": 301, "method": "DOM.enable"}))
+        while True:
+            r = await ws.receive_json()
+            if r.get("id") == 301:
+                break
+        
+        # Step 2: Get Document
+        await ws.send_str(json.dumps({"id": 302, "method": "DOM.getDocument"}))
+        root_node_id = None
+        while True:
+            r = await ws.receive_json()
+            if r.get("id") == 302:
+                root_node_id = r.get("result", {}).get("root", {}).get("nodeId")
+                break
+        
+        if not root_node_id:
+            logger.warning("Could not get root nodeId from DOM")
+            return False
+            
+        # Step 3: Query file input
+        await ws.send_str(json.dumps({
+            "id": 303,
+            "method": "DOM.querySelector",
+            "params": {"nodeId": root_node_id, "selector": 'input[type="file"]'}
+        }))
+        file_node_id = None
+        while True:
+            r = await ws.receive_json()
+            if r.get("id") == 303:
+                file_node_id = r.get("result", {}).get("nodeId")
+                break
+                
+        if not file_node_id:
+            logger.warning("Could not find input[type='file'] in Antigravity DOM")
+            return False
+
+        # Step 4: Set file path
+        abs_path = str(Path(file_path).resolve())
+        await ws.send_str(json.dumps({
+            "id": 304,
+            "method": "DOM.setFileInputFiles",
+            "params": {"files": [abs_path], "nodeId": file_node_id}
+        }))
+        while True:
+            r = await ws.receive_json()
+            if r.get("id") == 304:
+                logger.info(f"Successfully attached file via CDP: {abs_path}")
+                break
+        
+        # Wait 350ms for React/Chromium to render attachment chip
+        await asyncio.sleep(0.35)
+        return True
+    except Exception as e:
+        logger.error(f"Error attaching file via CDP: {e}", exc_info=True)
+        return False
+
+async def send_prompt_to_antigravity(prompt_text, image_path=None, conv_id=None, focus_window=False, port=None):
     """
-    Injects the given prompt text directly into Antigravity's active chat canvas
+    Injects the given prompt text (and optional image file) directly into Antigravity's active chat canvas
     and triggers prompt submission. Supports switching conversation or starting a new one.
     """
-    if not prompt_text or not prompt_text.strip():
-        return {"status": "error", "message": "Prompt text is empty"}
+    prompt_text = (prompt_text or "").strip()
+    if not prompt_text and not image_path:
+        return {"status": "error", "message": "Prompt text and image are both empty"}
 
     # Handle conversation switching or new chat creation first if requested
     if conv_id == "new":
@@ -474,10 +614,8 @@ async def send_prompt_to_antigravity(prompt_text, conv_id=None, focus_window=Fal
         await switch_conversation(conv_id, port)
         await asyncio.sleep(1.0)
 
-    prompt_text = prompt_text.strip()
     target = await find_antigravity_target(port)
     if not target:
-        # Try to launch Antigravity and wait up to 12s
         ensure_antigravity_running()
         for attempt in range(12):
             await asyncio.sleep(1.0)
@@ -501,7 +639,14 @@ async def send_prompt_to_antigravity(prompt_text, conv_id=None, focus_window=Fal
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=5.0)) as ws:
+            async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=8.0)) as ws:
+                # If image is attached, set it first
+                if image_path and os.path.exists(image_path):
+                    logger.info(f"Attaching image to Antigravity composer: {image_path}")
+                    attached = await attach_file_to_composer(ws, image_path)
+                    if not attached:
+                        logger.warning("Image attachment failed via CDP, will attempt text prompt...")
+
                 # Step 1: Locate and focus the Message input element
                 focus_js = """
                 (() => {
@@ -518,24 +663,32 @@ async def send_prompt_to_antigravity(prompt_text, conv_id=None, focus_window=Fal
                     "method": "Runtime.evaluate",
                     "params": {"expression": focus_js, "returnByValue": True}
                 }))
-                reply = await ws.receive_json()
-                found = reply.get("result", {}).get("result", {}).get("value", {}).get("found", False)
+                while True:
+                    reply = await ws.receive_json()
+                    if reply.get("id") == 101:
+                        found = reply.get("result", {}).get("result", {}).get("value", {}).get("found", False)
+                        break
+
                 if not found:
                     return {
                         "status": "error",
                         "message": "Message input element not found in Antigravity chat canvas."
                     }
 
-                # Step 2: Insert text via CDP Input.insertText (clean native IME injection)
-                await ws.send_str(json.dumps({
-                    "id": 102,
-                    "method": "Input.insertText",
-                    "params": {"text": prompt_text}
-                }))
-                await ws.receive_json()
+                # Step 2: Insert text via CDP Input.insertText (if provided)
+                if prompt_text:
+                    await ws.send_str(json.dumps({
+                        "id": 102,
+                        "method": "Input.insertText",
+                        "params": {"text": prompt_text}
+                    }))
+                    while True:
+                        r = await ws.receive_json()
+                        if r.get("id") == 102:
+                            break
 
                 # Step 3: Trigger Enter key event to submit
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.08)
                 await ws.send_str(json.dumps({
                     "id": 103,
                     "method": "Input.dispatchKeyEvent",
@@ -547,7 +700,10 @@ async def send_prompt_to_antigravity(prompt_text, conv_id=None, focus_window=Fal
                         "text": "\r"
                     }
                 }))
-                await ws.receive_json()
+                while True:
+                    r = await ws.receive_json()
+                    if r.get("id") == 103:
+                        break
 
                 await ws.send_str(json.dumps({
                     "id": 104,
@@ -559,7 +715,10 @@ async def send_prompt_to_antigravity(prompt_text, conv_id=None, focus_window=Fal
                         "code": "Enter"
                     }
                 }))
-                await ws.receive_json()
+                while True:
+                    r = await ws.receive_json()
+                    if r.get("id") == 104:
+                        break
 
                 # Step 4: Click Send button if still present
                 click_send_js = """
@@ -581,12 +740,16 @@ async def send_prompt_to_antigravity(prompt_text, conv_id=None, focus_window=Fal
                     "method": "Runtime.evaluate",
                     "params": {"expression": click_send_js, "returnByValue": True}
                 }))
-                await ws.receive_json()
+                while True:
+                    r = await ws.receive_json()
+                    if r.get("id") == 105:
+                        break
 
                 return {
                     "status": "ok",
                     "message": "Prompt successfully delivered to Antigravity!",
-                    "target_title": target.get("title", "")
+                    "target_title": target.get("title", ""),
+                    "image_attached": bool(image_path)
                 }
     except Exception as e:
         logger.error(f"CDP injection failed: {e}", exc_info=True)

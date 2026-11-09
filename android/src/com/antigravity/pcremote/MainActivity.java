@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.DialogInterface;
+import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
@@ -18,6 +19,7 @@ import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
 import android.webkit.JsResult;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
@@ -34,6 +36,8 @@ public class MainActivity extends Activity {
     private WebView webView;
     private static final String APP_HOST = "pcremote.local";
     private static final String APP_URL = "https://" + APP_HOST + "/index.html";
+    private ValueCallback<Uri[]> mFilePathCallback;
+    private static final int FILECHOOSER_RESULTCODE = 1001;
 
     public class AndroidBridge {
         private final Context context;
@@ -110,11 +114,11 @@ public class MainActivity extends Activity {
         Window window = getWindow();
         window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
         window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
-        window.setStatusBarColor(0xFF08090D);
-        window.setNavigationBarColor(0xFF08090D);
+        window.setStatusBarColor(0xFF09090B);
+        window.setNavigationBarColor(0xFF09090B);
 
         webView = new WebView(this);
-        webView.setBackgroundColor(0xFF08090D);
+        webView.setBackgroundColor(0xFF09090B);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -147,6 +151,26 @@ public class MainActivity extends Activity {
             @Override
             public boolean onConsoleMessage(ConsoleMessage cm) {
                 Log.d("PCRemote", cm.message() + " [L:" + cm.lineNumber() + "]");
+                return true;
+            }
+
+            @Override
+            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, WebChromeClient.FileChooserParams fileChooserParams) {
+                if (mFilePathCallback != null) {
+                    mFilePathCallback.onReceiveValue(null);
+                    mFilePathCallback = null;
+                }
+                mFilePathCallback = filePathCallback;
+
+                Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("image/*");
+                try {
+                    startActivityForResult(Intent.createChooser(intent, "Выберите скриншот или фото"), FILECHOOSER_RESULTCODE);
+                } catch (Exception e) {
+                    mFilePathCallback = null;
+                    return false;
+                }
                 return true;
             }
         });
@@ -197,8 +221,34 @@ public class MainActivity extends Activity {
         if (path.endsWith(".css")) return "text/css";
         if (path.endsWith(".json")) return "application/json";
         if (path.endsWith(".png")) return "image/png";
+        if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
+        if (path.endsWith(".webp")) return "image/webp";
         if (path.endsWith(".svg")) return "image/svg+xml";
         return "application/octet-stream";
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == FILECHOOSER_RESULTCODE) {
+            if (mFilePathCallback == null) return;
+            Uri[] results = null;
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                String dataString = data.getDataString();
+                if (dataString != null) {
+                    results = new Uri[]{Uri.parse(dataString)};
+                } else if (data.getClipData() != null) {
+                    final int numSelectedFiles = data.getClipData().getItemCount();
+                    results = new Uri[numSelectedFiles];
+                    for (int i = 0; i < numSelectedFiles; i++) {
+                        results[i] = data.getClipData().getItemAt(i).getUri();
+                    }
+                }
+            }
+            mFilePathCallback.onReceiveValue(results);
+            mFilePathCallback = null;
+        } else {
+            super.onActivityResult(requestCode, resultCode, data);
+        }
     }
 
     @Override
