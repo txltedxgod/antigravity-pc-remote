@@ -19,6 +19,7 @@ let lastMessageCount = 0;
 let isSwitchingConv = false;
 let isSendingPrompt = false;
 let currentAgentStatus = "idle";
+let userIsAwaitingResponse = false;
 
 // Active screenshot attachment
 let currentAttachedImage = null; // Base64 dataURL
@@ -372,14 +373,19 @@ async function stopAgentExecution() {
   showToast("🛑 Остановка выполнения агента...");
 
   try {
-    const res = await apiCall("/api/antigravity/stop", "POST");
-    if (res && res.status === "ok") {
+    const res = await apiCall("/api/antigravity/stop", "POST", {
+      conversation_id: currentConvId || null
+    });
+    if (res && res.status === "ok" && res.result && res.result.clicked) {
+      userIsAwaitingResponse = false;
       showToast("🛑 Агент успешно остановлен!");
       const activityBanner = document.getElementById("agentActivityBanner");
       if (activityBanner) activityBanner.style.display = "none";
+      currentAgentStatus = "idle";
+      updateSendButtonState();
       setTimeout(() => fetchChat(false), 500);
     } else {
-      showToast("Не удалось остановить: " + (res?.message || "кнопка не найдена"));
+      showToast("Не удалось остановить: " + (res?.result?.message || res?.message || "кнопка не найдена"));
     }
   } catch (e) {
     showToast("Ошибка остановки: " + e.message);
@@ -676,7 +682,9 @@ async function fetchChat(autoScroll = true) {
     const agentStatus = res.agent_status || "idle";
     const currentAction = res.current_action || "";
 
-    if ((currentAgentStatus === "executing" || currentAgentStatus === "thinking") && agentStatus === "idle") {
+    // Truthful notification: ONLY fire when the user was actively awaiting response for this chat
+    if (userIsAwaitingResponse && (currentAgentStatus === "executing" || currentAgentStatus === "thinking") && agentStatus === "idle") {
+      userIsAwaitingResponse = false;
       notifyTaskCompleted();
     }
 
@@ -842,6 +850,7 @@ async function sendPrompt() {
     });
 
     if (res.status === "ok") {
+      userIsAwaitingResponse = true;
       if (isAgentBusy) {
         showToast("⏳ Сообщение добавлено в очередь Antigravity!");
       } else {
@@ -1078,6 +1087,7 @@ async function switchConversation(convId, optTitle) {
   currentConvId = convId;
   updateActiveConvTitle(convId, optTitle);
   isSwitchingConv = true;
+  userIsAwaitingResponse = false;
   lastMessageCount = 0;
 
   const feed = document.getElementById("chatFeed");
@@ -1102,6 +1112,7 @@ async function startNewConversation() {
   closeSidebar();
 
   isSwitchingConv = true;
+  userIsAwaitingResponse = false;
   currentConvId = "new";
   lastMessageCount = 0;
   updateActiveConvTitle("new");

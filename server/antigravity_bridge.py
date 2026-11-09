@@ -672,10 +672,11 @@ def parse_conversation_history(conv_id, limit=50):
             "messages": []
         }
 
-async def check_agent_active_status_cdp(target=None, port=None):
+async def check_agent_active_status_cdp(conv_id=None, target=None, port=None):
     """
-    Directly queries Antigravity DOM via Chrome DevTools Protocol.
-    Excludes sidebar background tasks so status strictly reflects the active chat.
+    Directly queries Antigravity DOM via Chrome DevTools Protocol:
+    1. If conv_id provided: checks if the conversation row has button[aria-label="Stop execution"]
+    2. Or if active canvas has button[aria-label="Stop execution"]
     Returns (is_running: bool, current_action: str) based on actual live DOM.
     """
     try:
@@ -686,14 +687,24 @@ async def check_agent_active_status_cdp(target=None, port=None):
         ws_url = target.get("webSocketDebuggerUrl")
         if not ws_url:
             return False, ""
+        cid = conv_id or ""
         async with aiohttp.ClientSession() as session:
             async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=1.2)) as ws:
-                js = """
-                (() => {
-                    const allStopBtns = Array.from(document.querySelectorAll('button[aria-label="Stop execution"], button[title="Stop execution"], button[aria-label="Stop"]'));
-                    const activeStopBtn = allStopBtns.find(b => !b.closest('[class*="sidebar"], aside, nav, [data-testid="conversation-row-sidebar"]'));
-                    return { isRunning: !!activeStopBtn };
-                })()
+                js = f"""
+                (() => {{
+                    const convId = '{cid}';
+                    if (convId) {{
+                        const row = document.querySelector(`[data-cascade-id="${{convId}}"], [data-conversation-id="${{convId}}"]`);
+                        if (row) {{
+                            const stopInRow = row.querySelector('button[aria-label="Stop execution"], [aria-label*="Stop"]');
+                            if (stopInRow) return {{ isRunning: true, source: 'sidebar_row' }};
+                        }}
+                    }}
+                    const canvasStop = document.querySelector('button[aria-label="Stop execution"], button[title="Stop execution"]');
+                    if (canvasStop) return {{ isRunning: true, source: 'canvas' }};
+
+                    return {{ isRunning: false, source: 'none' }};
+                }})()
                 """
                 await ws.send_str(json.dumps({
                     "id": 401,
@@ -732,6 +743,16 @@ async def get_conversation_chat(conv_id=None, limit=50, port=None):
         }
 
     chat_data = parse_conversation_history(conv_id, limit=limit)
+    is_live_running, _ = await check_agent_active_status_cdp(conv_id=conv_id, target=target, port=port)
+    if is_live_running:
+        if chat_data.get("agent_status") == "idle":
+            chat_data["agent_status"] = "executing"
+            if not chat_data.get("current_action"):
+                chat_data["current_action"] = "Выполняет задачу..."
+    else:
+        chat_data["agent_status"] = "idle"
+        chat_data["current_action"] = ""
+
     return chat_data
 
 async def attach_file_to_composer(ws, file_path):
@@ -954,8 +975,8 @@ async def send_prompt_to_antigravity(prompt_text, image_path=None, conv_id=None,
         logger.error(f"CDP injection failed: {e}", exc_info=True)
         return {"status": "error", "message": f"CDP error: {str(e)}"}
 
-async def stop_agent_execution(port=None):
-    """Triggers the Stop button in Antigravity chat canvas via CDP to immediately abort execution."""
+async def stop_agent_execution(conv_id=None, port=None):
+    """Triggers the Stop button in Antigravity via CDP to immediately abort execution."""
     target = await find_antigravity_target(port)
     if not target:
         return {"status": "error", "message": "Antigravity not found"}
@@ -964,19 +985,42 @@ async def stop_agent_execution(port=None):
     if not ws_url:
         return {"status": "error", "message": "No debugger URL"}
 
+    cid = conv_id or ""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=2.0)) as ws:
-                js = """
-                (() => {
-                    const allBtns = Array.from(document.querySelectorAll('button[aria-label="Stop execution"], button[title="Stop execution"], button[aria-label="Stop"]'));
-                    const stopBtn = allBtns.find(b => !b.closest('[class*="sidebar"], aside, nav, [data-testid="conversation-row-sidebar"]')) || allBtns[0];
-                    if (stopBtn) {
-                        stopBtn.click();
-                        return { clicked: true, name: stopBtn.getAttribute('aria-label') || 'Stop execution' };
-                    }
-                    return { clicked: false, message: "No active stop button found in canvas" };
-                })()
+                js = f"""
+                (() => {{
+                    const convId = '{cid}';
+
+                    // 1. If convId is provided, first look for its sidebar row stop button
+                    if (convId) {{
+                        const row = document.querySelector(`[data-cascade-id="${{convId}}"], [data-conversation-id="${{convId}}"]`);
+                        if (row) {{
+                            const stopBtn = row.querySelector('button[aria-label="Stop execution"], [aria-label*="Stop"]');
+                            if (stopBtn) {{
+                                stopBtn.click();
+                                return {{ clicked: true, method: 'sidebar_row', convId }};
+                            }}
+                        }}
+                    }}
+
+                    // 2. Check the active canvas stop button
+                    const canvasStop = document.querySelector('button[aria-label="Stop execution"], button[title="Stop execution"]');
+                    if (canvasStop) {{
+                        canvasStop.click();
+                        return {{ clicked: true, method: 'canvas', convId }};
+                    }}
+
+                    // 3. Any stop button in the document
+                    const allStops = Array.from(document.querySelectorAll('button[aria-label="Stop execution"], [aria-label*="Stop"]'));
+                    if (allStops.length > 0) {{
+                        allStops[allStops.length - 1].click();
+                        return {{ clicked: true, method: 'fallback_any', convId }};
+                    }}
+
+                    return {{ clicked: false, message: "No active stop button found in Antigravity" }};
+                }})()
                 """
                 await ws.send_str(json.dumps({
                     "id": 801,

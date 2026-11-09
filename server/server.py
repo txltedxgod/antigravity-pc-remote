@@ -337,7 +337,12 @@ async def handle_pc_telemetry(request):
     return json_response(data)
 
 async def handle_antigravity_stop(request):
-    res = await antigravity_bridge.stop_agent_execution()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    conv_id = body.get("conversation_id")
+    res = await antigravity_bridge.stop_agent_execution(conv_id=conv_id)
     return json_response(res)
 
 async def handle_download_apk(request):
