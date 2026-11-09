@@ -418,6 +418,11 @@ async def switch_conversation(conv_id, port=None):
     if not target:
         return {"status": "error", "message": "Antigravity not found"}
 
+    current_url = target.get("url", "")
+    if f"/c/{conv_id}" in current_url:
+        logger.info(f"Target is already on conversation {conv_id}, no switch needed.")
+        return {"status": "ok", "message": f"Already on {conv_id}"}
+
     ws_url = target.get("webSocketDebuggerUrl")
     try:
         async with aiohttp.ClientSession() as session:
@@ -440,11 +445,11 @@ async def switch_conversation(conv_id, port=None):
                     "method": "Runtime.evaluate",
                     "params": {"expression": js, "returnByValue": True}
                 }))
-                while True:
-                    reply = await ws.receive_json()
-                    if reply.get("id") == 202:
-                        break
-                await asyncio.sleep(0.8)
+                try:
+                    await asyncio.wait_for(ws.receive_json(), timeout=1.8)
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
                 return {"status": "ok", "message": f"Switched to {conv_id}"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -889,22 +894,29 @@ async def send_prompt_to_antigravity(prompt_text, image_path=None, conv_id=None,
             "message": "Antigravity не удалось запустить или подключиться по DevTools CDP."
         }
 
-    # 2. Handle conversation switching or new chat creation if requested
-    if conv_id == "new":
-        logger.info("Creating new conversation before sending prompt...")
-        await create_new_conversation(port)
-        await asyncio.sleep(1.0)
-    elif conv_id:
-        logger.info(f"Switching to conversation {conv_id} before sending prompt...")
-        await switch_conversation(conv_id, port)
-        await asyncio.sleep(1.0)
-
     target = await find_antigravity_target(port)
     if not target:
         return {
             "status": "error",
             "message": "Antigravity DevTools endpoint not found after ready check."
         }
+
+    current_url = target.get("url", "")
+
+    # 2. Handle conversation switching or new chat creation only if genuinely required
+    if conv_id == "new":
+        logger.info("Creating new conversation before sending prompt...")
+        await create_new_conversation(port)
+        await asyncio.sleep(0.8)
+        target = await find_antigravity_target(port) or target
+    elif conv_id:
+        if f"/c/{conv_id}" in current_url:
+            logger.info(f"Antigravity is ALREADY on conversation {conv_id}. Fast path!")
+        else:
+            logger.info(f"Switching conversation from {current_url} to {conv_id} before sending prompt...")
+            await switch_conversation(conv_id, port)
+            await asyncio.sleep(0.8)
+            target = await find_antigravity_target(port) or target
 
     ws_url = target.get("webSocketDebuggerUrl")
     if not ws_url:
@@ -915,7 +927,7 @@ async def send_prompt_to_antigravity(prompt_text, image_path=None, conv_id=None,
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=8.0)) as ws:
+            async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=12.0)) as ws:
                 # If image is attached, set it first
                 if image_path and os.path.exists(image_path):
                     logger.info(f"Attaching image to Antigravity composer: {image_path}")
@@ -923,27 +935,40 @@ async def send_prompt_to_antigravity(prompt_text, image_path=None, conv_id=None,
                     if not attached:
                         logger.warning("Image attachment failed via CDP, will attempt text prompt...")
 
-                # Step 1: Locate and focus the Message input element
+                # Step 1: Locate and focus the Message input element with retry
                 focus_js = """
                 (() => {
-                    const el = document.querySelector('[aria-label="Message input"]');
+                    let el = document.querySelector('[aria-label="Message input"]');
+                    if (!el) {
+                        el = document.querySelector('[contenteditable="true"]') ||
+                             document.querySelector('textarea');
+                    }
                     if (el) {
                         el.focus();
+                        el.click();
                         return { found: true };
                     }
                     return { found: false };
                 })()
                 """
-                await ws.send_str(json.dumps({
-                    "id": 101,
-                    "method": "Runtime.evaluate",
-                    "params": {"expression": focus_js, "returnByValue": True}
-                }))
-                while True:
-                    reply = await ws.receive_json()
-                    if reply.get("id") == 101:
-                        found = reply.get("result", {}).get("result", {}).get("value", {}).get("found", False)
+                found = False
+                for _ in range(8):
+                    await ws.send_str(json.dumps({
+                        "id": 101,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": focus_js, "returnByValue": True}
+                    }))
+                    while True:
+                        try:
+                            reply = await asyncio.wait_for(ws.receive_json(), timeout=2.0)
+                            if reply.get("id") == 101:
+                                found = reply.get("result", {}).get("result", {}).get("value", {}).get("found", False)
+                                break
+                        except (asyncio.TimeoutError, Exception):
+                            break
+                    if found:
                         break
+                    await asyncio.sleep(0.25)
 
                 if not found:
                     return {

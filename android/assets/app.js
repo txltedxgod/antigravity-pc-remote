@@ -43,11 +43,21 @@ async function discoverCloudUrl(force = false) {
     if (data && data.content) {
       const decoded = atob(data.content.replace(/\s/g, "")).trim();
       if (decoded.startsWith("https://") && decoded.includes("trycloudflare.com")) {
-        cloudUrl = decoded;
-        localStorage.setItem("pc_remote_cloud_url", decoded);
+        const cleanDecoded = decoded.replace(/\/+$/, "");
+        cloudUrl = cleanDecoded;
+        localStorage.setItem("pc_remote_cloud_url", cleanDecoded);
+
+        // Immediate migration: if stored host is a stale Cloudflare tunnel, update immediately!
+        if (config.host && (config.host.includes("trycloudflare.com") || force) && config.host !== cleanDecoded) {
+          console.log(`Auto-migrating host: ${config.host} -> ${cleanDecoded}`);
+          config.host = cleanDecoded;
+          localStorage.setItem("pc_remote_host", cleanDecoded);
+          showToast("🌐 Адрес туннеля обновлен с GitHub!");
+        }
+
         const disp = document.getElementById("cloudUrlDisplay");
-        if (disp) disp.value = decoded;
-        return decoded;
+        if (disp) disp.value = cleanDecoded;
+        return cleanDecoded;
       }
     }
   } catch (e) {
@@ -128,7 +138,10 @@ async function apiCall(path, method = "GET", body = null) {
   }
 
   const isLocalHost = !config.host.includes("trycloudflare.com");
-  const timeoutMs = isLocalHost ? 3000 : 8000;
+  let timeoutMs = isLocalHost ? 6000 : 14000;
+  if (path.includes("/send") || path.includes("/screenshot")) {
+    timeoutMs = 45000;
+  }
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   opts.signal = controller.signal;
@@ -1064,7 +1077,7 @@ async function sendPrompt() {
       if (activityBanner) activityBanner.style.display = "none";
     }
   } catch (e) {
-    showToast("Ошибка связи с сервером Antigravity");
+    showToast("Ошибка связи: " + (e.message || "Таймаут соединения"));
     if (activityBanner) activityBanner.style.display = "none";
   } finally {
     btn.disabled = false;
@@ -1396,10 +1409,14 @@ async function pollStatus() {
       }
     }
 
-    // Cloudflare Tunnel URL auto-detection
+    // Cloudflare Tunnel URL auto-detection & sync
     if (pcStatus.cloud_url) {
       cloudUrl = pcStatus.cloud_url;
       localStorage.setItem("pc_remote_cloud_url", pcStatus.cloud_url);
+      if (config.host && config.host.includes("trycloudflare.com") && config.host !== pcStatus.cloud_url) {
+        config.host = pcStatus.cloud_url;
+        localStorage.setItem("pc_remote_host", pcStatus.cloud_url);
+      }
       const box = document.getElementById("cloudTunnelInfoBox");
       const disp = document.getElementById("cloudUrlDisplay");
       if (box && disp) {
