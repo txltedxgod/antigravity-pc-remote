@@ -326,6 +326,20 @@ async def handle_antigravity_send(request):
         await asyncio.sleep(0.3)
         return json_response(res)
 
+async def handle_pc_screenshot(request):
+    data, src = await antigravity_bridge.capture_pc_screenshot()
+    if not data:
+        return json_response({"status": "error", "message": "Failed to capture PC screenshot"}, status=500)
+    return json_response({"status": "ok", "image": data, "source": src})
+
+async def handle_pc_telemetry(request):
+    data = antigravity_bridge.get_pc_telemetry()
+    return json_response(data)
+
+async def handle_antigravity_stop(request):
+    res = await antigravity_bridge.stop_agent_execution()
+    return json_response(res)
+
 async def handle_download_apk(request):
     if not APK_PATH.exists():
         return web.Response(text="APK not found. Please build it first.", status=404)
@@ -346,6 +360,8 @@ def create_app():
     # API Routes
     app.router.add_get("/api/ping", handle_ping)
     app.router.add_get("/api/pc/status", handle_pc_status)
+    app.router.add_get("/api/pc/telemetry", handle_pc_telemetry)
+    app.router.add_get("/api/pc/screenshot", handle_pc_screenshot)
     app.router.add_get("/api/pc/windows", handle_pc_windows)
     app.router.add_post("/api/pc/action", handle_pc_action)
     app.router.add_get("/api/clipboard", handle_get_clipboard)
@@ -357,6 +373,7 @@ def create_app():
     app.router.add_post("/api/antigravity/conversation/new", handle_antigravity_new_conversation)
     app.router.add_get("/api/antigravity/chat", handle_antigravity_chat)
     app.router.add_post("/api/antigravity/send", handle_antigravity_send)
+    app.router.add_post("/api/antigravity/stop", handle_antigravity_stop)
     app.router.add_get("/download/apk", handle_download_apk)
 
     # Web Dashboard Static Fallback

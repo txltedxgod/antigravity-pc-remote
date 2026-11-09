@@ -953,3 +953,133 @@ async def send_prompt_to_antigravity(prompt_text, image_path=None, conv_id=None,
     except Exception as e:
         logger.error(f"CDP injection failed: {e}", exc_info=True)
         return {"status": "error", "message": f"CDP error: {str(e)}"}
+
+async def stop_agent_execution(port=None):
+    """Triggers the Stop button in Antigravity chat canvas via CDP to immediately abort execution."""
+    target = await find_antigravity_target(port)
+    if not target:
+        return {"status": "error", "message": "Antigravity not found"}
+
+    ws_url = target.get("webSocketDebuggerUrl")
+    if not ws_url:
+        return {"status": "error", "message": "No debugger URL"}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=2.0)) as ws:
+                js = """
+                (() => {
+                    const allBtns = Array.from(document.querySelectorAll('button[aria-label="Stop execution"], button[title="Stop execution"], button[aria-label="Stop"]'));
+                    const stopBtn = allBtns.find(b => !b.closest('[class*="sidebar"], aside, nav, [data-testid="conversation-row-sidebar"]')) || allBtns[0];
+                    if (stopBtn) {
+                        stopBtn.click();
+                        return { clicked: true, name: stopBtn.getAttribute('aria-label') || 'Stop execution' };
+                    }
+                    return { clicked: false, message: "No active stop button found in canvas" };
+                })()
+                """
+                await ws.send_str(json.dumps({
+                    "id": 801,
+                    "method": "Runtime.evaluate",
+                    "params": {"expression": js, "returnByValue": True}
+                }))
+                while True:
+                    r = await ws.receive_json()
+                    if r.get("id") == 801:
+                        res = r.get("result", {}).get("result", {}).get("value", {})
+                        return {"status": "ok", "result": res}
+    except Exception as e:
+        logger.error(f"Error stopping agent via CDP: {e}")
+        return {"status": "error", "message": str(e)}
+
+async def capture_pc_screenshot():
+    """Captures a screenshot of the primary display (or Antigravity workspace fallback if desktop is locked)."""
+    # 1. Desktop capture via mss
+    try:
+        import mss
+        from PIL import Image
+        import io
+        import base64
+        with mss.mss() as sct:
+            mon = sct.monitors[1]
+            sct_img = sct.grab(mon)
+            img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+            img.thumbnail((1280, 720), Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=70)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            return f"data:image/jpeg;base64,{b64}", "desktop"
+    except Exception as e:
+        logger.debug(f"Desktop mss capture failed: {e}")
+
+    # 2. CDP fallback (captures workspace window even when desktop is locked)
+    try:
+        target = await find_antigravity_target()
+        if target:
+            ws_url = target.get("webSocketDebuggerUrl")
+            if ws_url:
+                async with aiohttp.ClientSession() as session:
+                    async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=2.0)) as ws:
+                        await ws.send_str(json.dumps({
+                            "id": 901,
+                            "method": "Page.captureScreenshot",
+                            "params": {"format": "jpeg", "quality": 70}
+                        }))
+                        while True:
+                            r = await ws.receive_json()
+                            if r.get("id") == 901:
+                                raw_b64 = r.get("result", {}).get("data", "")
+                                return f"data:image/jpeg;base64,{raw_b64}", "cdp_workspace"
+    except Exception as e:
+        logger.debug(f"CDP capture fallback failed: {e}")
+
+    return None, "failed"
+
+def get_pc_telemetry():
+    """Gathers real-time CPU, RAM, disk space, and GPU metrics."""
+    import psutil
+    import subprocess
+
+    cpu_pct = psutil.cpu_percent(interval=None)
+    v = psutil.virtual_memory()
+    d = psutil.disk_usage("C:\\")
+
+    gpu_info = None
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
+            stderr=subprocess.DEVNULL,
+            timeout=0.8,
+            text=True
+        ).strip()
+        if out:
+            parts = [p.strip() for p in out.split(",")]
+            if len(parts) >= 5:
+                gpu_info = {
+                    "name": parts[0],
+                    "temp_c": int(parts[1]),
+                    "percent": int(parts[2]),
+                    "vram_used_mb": int(parts[3]),
+                    "vram_total_mb": int(parts[4])
+                }
+    except Exception:
+        pass
+
+    return {
+        "status": "ok",
+        "cpu": {
+            "percent": cpu_pct,
+            "cores": psutil.cpu_count(logical=True)
+        },
+        "ram": {
+            "percent": v.percent,
+            "used_gb": round(v.used / (1024**3), 1),
+            "total_gb": round(v.total / (1024**3), 1)
+        },
+        "disk": {
+            "free_gb": round(d.free / (1024**3), 1),
+            "total_gb": round(d.total / (1024**3), 1),
+            "percent": d.percent
+        },
+        "gpu": gpu_info
+    }

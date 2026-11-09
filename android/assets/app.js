@@ -284,6 +284,22 @@ document.addEventListener("click", (e) => {
 });
 
 // --- SCREENSHOT & IMAGE ATTACHMENT LOGIC ---
+function attachBase64Image(dataUrl, fileName = "screenshot.jpg") {
+  currentAttachedImage = dataUrl;
+  currentAttachedFileName = fileName;
+
+  const previewContainer = document.getElementById("imagePreviewContainer");
+  const previewImg = document.getElementById("imagePreviewImg");
+  const previewName = document.getElementById("previewFileName");
+
+  if (previewImg) previewImg.src = currentAttachedImage;
+  if (previewName) previewName.textContent = currentAttachedFileName;
+  if (previewContainer) previewContainer.style.display = "flex";
+
+  updateSendButtonState();
+  haptic(30);
+}
+
 function attachImageFile(file) {
   if (!file || !file.type || !file.type.startsWith("image/")) {
     showToast("Пожалуйста, прикрепите изображение (PNG, JPG, WEBP)");
@@ -291,19 +307,7 @@ function attachImageFile(file) {
   }
   const reader = new FileReader();
   reader.onload = (e) => {
-    currentAttachedImage = e.target.result;
-    currentAttachedFileName = file.name || "screenshot.png";
-    
-    const previewContainer = document.getElementById("imagePreviewContainer");
-    const previewImg = document.getElementById("imagePreviewImg");
-    const previewName = document.getElementById("previewFileName");
-    
-    if (previewImg) previewImg.src = currentAttachedImage;
-    if (previewName) previewName.textContent = currentAttachedFileName;
-    if (previewContainer) previewContainer.style.display = "flex";
-    
-    updateSendButtonState();
-    haptic(30);
+    attachBase64Image(e.target.result, file.name || "screenshot.png");
     showToast("📸 Скриншот прикреплен!");
   };
   reader.readAsDataURL(file);
@@ -319,6 +323,248 @@ function clearAttachedImage() {
   if (previewContainer) previewContainer.style.display = "none";
   if (fileInput) fileInput.value = "";
   updateSendButtonState();
+}
+
+// 1. Capture PC Screenshot into Composer (+ fallback to CDP workspace)
+async function capturePCScreen() {
+  haptic(30);
+  showToast("📸 Делаю снимок экрана ПК...");
+  try {
+    const res = await apiCall("/api/pc/screenshot");
+    if (res && res.status === "ok" && res.image) {
+      const srcName = res.source === "desktop" ? "Рабочий стол ПК" : "Окно Antigravity";
+      attachBase64Image(res.image, `pc_${res.source}.jpg`);
+      showToast(`📸 Скриншот (${srcName}) готов к отправке!`);
+    } else {
+      showToast("Не удалось сделать скриншот: " + (res?.message || "ошибка"));
+    }
+  } catch (e) {
+    showToast("Ошибка при захвате экрана: " + e.message);
+  }
+}
+
+// Fullscreen Image Preview Modal
+function openImageModal(imgSrc, title = "Снимок экрана") {
+  if (!imgSrc) return;
+  haptic(15);
+  const modal = document.getElementById("imageModal");
+  const modalImg = document.getElementById("imageModalImg");
+  const modalTitle = document.getElementById("imageModalTitle");
+  if (!modal || !modalImg) return;
+
+  modalImg.src = imgSrc;
+  if (modalTitle) modalTitle.textContent = title;
+  modal.style.display = "flex";
+}
+
+function closeImageModal() {
+  const modal = document.getElementById("imageModal");
+  const modalImg = document.getElementById("imageModalImg");
+  if (modal) modal.style.display = "none";
+  if (modalImg) modalImg.src = "";
+}
+
+// 2. Emergency Stop Execution
+async function stopAgentExecution() {
+  haptic(40);
+  const btn = document.getElementById("btnStopExecution");
+  if (btn) btn.disabled = true;
+  showToast("🛑 Остановка выполнения агента...");
+
+  try {
+    const res = await apiCall("/api/antigravity/stop", "POST");
+    if (res && res.status === "ok") {
+      showToast("🛑 Агент успешно остановлен!");
+      const activityBanner = document.getElementById("agentActivityBanner");
+      if (activityBanner) activityBanner.style.display = "none";
+      setTimeout(() => fetchChat(false), 500);
+    } else {
+      showToast("Не удалось остановить: " + (res?.message || "кнопка не найдена"));
+    }
+  } catch (e) {
+    showToast("Ошибка остановки: " + e.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 3. Task Completion Push Notification
+function notifyTaskCompleted() {
+  haptic([80, 50, 100]);
+  try {
+    if (window.AndroidBridge && typeof window.AndroidBridge.showNotification === "function") {
+      window.AndroidBridge.showNotification("Antigravity IDE", "✅ Задача успешно выполнена!");
+    } else if ("Notification" in window && Notification.permission === "granted") {
+      new Notification("Antigravity IDE", {
+        body: "✅ Задача успешно выполнена!",
+        icon: "icon-192.png"
+      });
+    }
+  } catch (e) {}
+  showToast("🔔 Задача агента завершена!");
+}
+
+// 4. Voice Input (Dictation) via Web Speech API
+let speechRecognizer = null;
+let isVoiceRecording = false;
+
+function initVoiceInput() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) return null;
+
+  const recognizer = new SpeechRecognition();
+  recognizer.lang = "ru-RU";
+  recognizer.continuous = true;
+  recognizer.interimResults = true;
+
+  let baseText = "";
+
+  recognizer.onstart = () => {
+    isVoiceRecording = true;
+    haptic(40);
+    const btn = document.getElementById("btnVoiceInput");
+    const input = document.getElementById("promptInput");
+    if (btn) btn.classList.add("recording");
+    if (input) {
+      baseText = input.value.trim() ? input.value.trim() + " " : "";
+      input.setAttribute("placeholder", "Слушаю... Говорите в микрофон");
+    }
+    showToast("🎤 Голосовой ввод включен");
+  };
+
+  recognizer.onresult = (event) => {
+    const input = document.getElementById("promptInput");
+    if (!input) return;
+
+    let transcript = "";
+    for (let i = 0; i < event.results.length; ++i) {
+      transcript += event.results[i][0].transcript;
+    }
+
+    input.value = baseText + transcript;
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 120) + "px";
+    updateSendButtonState();
+  };
+
+  recognizer.onerror = (event) => {
+    console.warn("Speech error:", event.error);
+    stopVoiceInput();
+    if (event.error === "not-allowed") {
+      showToast("Разрешите доступ к микрофону в настройках приложения");
+    } else if (event.error !== "no-speech") {
+      showToast("Ошибка распознавания: " + event.error);
+    }
+  };
+
+  recognizer.onend = () => {
+    stopVoiceInput();
+  };
+
+  return recognizer;
+}
+
+function toggleVoiceInput() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    showToast("Голосовой ввод не поддерживается на этом устройстве");
+    return;
+  }
+
+  if (isVoiceRecording) {
+    stopVoiceInput();
+  } else {
+    startVoiceInput();
+  }
+}
+
+function startVoiceInput() {
+  if (!speechRecognizer) {
+    speechRecognizer = initVoiceInput();
+  }
+  if (speechRecognizer) {
+    try {
+      speechRecognizer.start();
+    } catch (e) {
+      try {
+        speechRecognizer.stop();
+        setTimeout(() => speechRecognizer.start(), 200);
+      } catch (err) {}
+    }
+  }
+}
+
+function stopVoiceInput() {
+  isVoiceRecording = false;
+  const btn = document.getElementById("btnVoiceInput");
+  const input = document.getElementById("promptInput");
+  if (btn) btn.classList.remove("recording");
+  if (input) input.setAttribute("placeholder", "Спросить Antigravity...");
+  if (speechRecognizer) {
+    try { speechRecognizer.stop(); } catch (e) {}
+  }
+}
+
+// 5. Hardware Telemetry Gatherer
+async function pollTelemetry() {
+  try {
+    const data = await apiCall("/api/pc/telemetry");
+    if (!data || data.status !== "ok") return;
+
+    // CPU
+    const cpuStat = document.getElementById("cpuStat");
+    const cpuFill = document.getElementById("cpuFill");
+    const cpuCores = document.getElementById("cpuCores");
+    if (data.cpu) {
+      if (cpuStat) cpuStat.textContent = `${data.cpu.percent}%`;
+      if (cpuFill) cpuFill.style.width = `${Math.min(data.cpu.percent, 100)}%`;
+      if (cpuCores) cpuCores.textContent = `${data.cpu.cores} ядер`;
+    }
+
+    // RAM
+    const ramStat = document.getElementById("ramStat");
+    const ramFill = document.getElementById("ramFill");
+    const ramDetail = document.getElementById("ramDetail");
+    if (data.ram) {
+      if (ramStat) ramStat.textContent = `${data.ram.percent}%`;
+      if (ramFill) ramFill.style.width = `${Math.min(data.ram.percent, 100)}%`;
+      if (ramDetail) ramDetail.textContent = `${data.ram.used_gb} / ${data.ram.total_gb} ГБ`;
+    }
+
+    // GPU
+    const gpuStat = document.getElementById("gpuStat");
+    const gpuFill = document.getElementById("gpuFill");
+    const gpuTemp = document.getElementById("gpuTemp");
+    const gpuName = document.getElementById("gpuName");
+    const gpuVram = document.getElementById("gpuVram");
+    if (data.gpu) {
+      if (gpuStat) gpuStat.textContent = `${data.gpu.percent}%`;
+      if (gpuFill) gpuFill.style.width = `${Math.min(data.gpu.percent, 100)}%`;
+      if (gpuTemp) {
+        gpuTemp.textContent = `${data.gpu.temp_c}°C`;
+        gpuTemp.style.color = data.gpu.temp_c > 80 ? "#EF4444" : (data.gpu.temp_c > 68 ? "#F59E0B" : "#10B981");
+      }
+      if (gpuName) gpuName.textContent = data.gpu.name || "NVIDIA RTX 2050";
+      if (gpuVram) gpuVram.textContent = `VRAM: ${data.gpu.vram_used_mb} / ${data.gpu.vram_total_mb} МБ`;
+    } else {
+      if (gpuStat) gpuStat.textContent = "—";
+      if (gpuName) gpuName.textContent = "Не обнаружено";
+      if (gpuTemp) gpuTemp.textContent = "—";
+      if (gpuVram) gpuVram.textContent = "GPU недоступен";
+    }
+
+    // DISK C:
+    const diskStat = document.getElementById("diskStat");
+    const diskFill = document.getElementById("diskFill");
+    const diskDetail = document.getElementById("diskDetail");
+    if (data.disk) {
+      if (diskStat) diskStat.textContent = `${data.disk.percent}%`;
+      if (diskFill) diskFill.style.width = `${Math.min(data.disk.percent, 100)}%`;
+      if (diskDetail) diskDetail.textContent = `Свободно ${data.disk.free_gb} из ${data.disk.total_gb} ГБ`;
+    }
+  } catch (e) {
+    console.debug("Telemetry error:", e);
+  }
 }
 
 function updateSendButtonState() {
@@ -401,9 +647,14 @@ async function fetchChat(autoScroll = true) {
       updateActiveConvTitle(currentConvId);
     }
 
-    // Update Agent Live Status
+    // Update Agent Live Status & Task Completion Notification
     const agentStatus = res.agent_status || "idle";
     const currentAction = res.current_action || "";
+
+    if ((currentAgentStatus === "executing" || currentAgentStatus === "thinking") && agentStatus === "idle") {
+      notifyTaskCompleted();
+    }
+
     currentAgentStatus = agentStatus;
     updateSendButtonState();
 
@@ -1084,6 +1335,8 @@ function setupEvents() {
         fetchChat(true);
       } else if (targetId === "tabControls" || targetId === "tabApps") {
         fetchActiveWindows();
+      } else if (targetId === "tabMonitor") {
+        pollTelemetry();
       }
     });
   });
@@ -1108,6 +1361,59 @@ function setupEvents() {
   // Send Button
   const btnSend = document.getElementById("btnSendPrompt");
   if (btnSend) btnSend.addEventListener("click", sendPrompt);
+
+  // Emergency Stop Execution Button
+  const btnStop = document.getElementById("btnStopExecution");
+  if (btnStop) btnStop.addEventListener("click", stopAgentExecution);
+
+  // PC Screenshot Capture Button
+  const btnCapturePC = document.getElementById("btnCapturePCScreen");
+  if (btnCapturePC) btnCapturePC.addEventListener("click", capturePCScreen);
+
+  // Voice Input (Dictation) Button
+  const btnVoice = document.getElementById("btnVoiceInput");
+  if (btnVoice) btnVoice.addEventListener("click", toggleVoiceInput);
+
+  // Fullscreen Image Modal Events
+  const previewImg = document.getElementById("imagePreviewImg");
+  if (previewImg) {
+    previewImg.addEventListener("click", () => {
+      if (currentAttachedImage) openImageModal(currentAttachedImage, currentAttachedFileName || "Снимок экрана");
+    });
+  }
+
+  const btnCloseModal = document.getElementById("btnCloseImageModal");
+  if (btnCloseModal) btnCloseModal.addEventListener("click", closeImageModal);
+
+  const imgModal = document.getElementById("imageModal");
+  if (imgModal) {
+    imgModal.addEventListener("click", (e) => {
+      if (e.target === imgModal || e.target.classList.contains("image-modal-body")) {
+        closeImageModal();
+      }
+    });
+  }
+
+  // Chat Feed Image Click Delegation (open modal for sent screenshots)
+  const chatFeed = document.getElementById("chatFeed");
+  if (chatFeed) {
+    chatFeed.addEventListener("click", (e) => {
+      const thumb = e.target.closest(".msg-attachment-thumb");
+      if (thumb && thumb.src) {
+        openImageModal(thumb.src, "Снимок экрана в чате");
+      }
+    });
+  }
+
+  // Refresh Telemetry Button
+  const btnRefTelemetry = document.getElementById("btnRefreshTelemetry");
+  if (btnRefTelemetry) {
+    btnRefTelemetry.addEventListener("click", () => {
+      haptic(20);
+      pollTelemetry();
+      showToast("Телеметрия обновлена");
+    });
+  }
 
   // File Attachment & Image Picking
   const btnAttach = document.getElementById("btnAttach");
@@ -1429,6 +1735,14 @@ window.addEventListener("DOMContentLoaded", () => {
   loadConversations();
   fetchChat(true);
   fetchActiveWindows();
+  pollTelemetry();
+
+  // Notification permissions request if supported
+  try {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+  } catch (e) {}
 
   // Regular Polling intervals
   statusPollTimer = setInterval(pollStatus, 3000);
@@ -1441,6 +1755,8 @@ window.addEventListener("DOMContentLoaded", () => {
   setInterval(() => {
     if (activeTab === "tabControls") {
       fetchActiveWindows();
+    } else if (activeTab === "tabMonitor") {
+      pollTelemetry();
     }
-  }, 4000);
+  }, 3500);
 });

@@ -128,6 +128,8 @@ def prepare_project():
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:label="@string/app_name"
@@ -194,8 +196,12 @@ def prepare_project():
     # 5. MainActivity.java
     java_content = f"""package com.antigravity.pcremote;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
@@ -213,6 +219,7 @@ import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
 import android.webkit.JsResult;
+import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -246,6 +253,37 @@ public class MainActivity extends Activity {{
                 @Override
                 public void run() {{
                     Toast.makeText(context, msg, Toast.LENGTH_SHORT).show();
+                }}
+            }});
+        }}
+
+        @JavascriptInterface
+        public void showNotification(final String title, final String body) {{
+            runOnUiThread(new Runnable() {{
+                @Override
+                public void run() {{
+                    try {{
+                        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+                        if (nm == null) return;
+                        String channelId = "pc_remote_agent";
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {{
+                            NotificationChannel chan = new NotificationChannel(channelId, "Agent Status", NotificationManager.IMPORTANCE_HIGH);
+                            chan.setDescription("Antigravity Agent Notifications");
+                            chan.enableVibration(true);
+                            nm.createNotificationChannel(chan);
+                        }}
+                        Notification.Builder builder;
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {{
+                            builder = new Notification.Builder(context, channelId);
+                        }} else {{
+                            builder = new Notification.Builder(context);
+                        }}
+                        builder.setContentTitle(title)
+                               .setContentText(body)
+                               .setSmallIcon(android.R.drawable.ic_dialog_info)
+                               .setAutoCancel(true);
+                        nm.notify((int) System.currentTimeMillis(), builder.build());
+                    }} catch (Exception ignored) {{}}
                 }}
             }});
         }}
@@ -311,6 +349,19 @@ public class MainActivity extends Activity {{
         window.setStatusBarColor(0xFF09090B);
         window.setNavigationBarColor(0xFF09090B);
 
+        // Auto request permissions for audio & notifications if needed
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {{
+            try {{
+                String[] perms;
+                if (Build.VERSION.SDK_INT >= 33) {{
+                    perms = new String[]{{Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS}};
+                }} else {{
+                    perms = new String[]{{Manifest.permission.RECORD_AUDIO}};
+                }}
+                requestPermissions(perms, 2001);
+            }} catch (Exception ignored) {{}}
+        }}
+
         webView = new WebView(this);
         webView.setBackgroundColor(0xFF09090B);
 
@@ -320,12 +371,20 @@ public class MainActivity extends Activity {{
         settings.setDatabaseEnabled(true);
         settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
 
         webView.addJavascriptInterface(new AndroidBridge(this), "AndroidBridge");
 
         webView.setWebChromeClient(new WebChromeClient() {{
+            @Override
+            public void onPermissionRequest(final PermissionRequest request) {{
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {{
+                    request.grant(request.getResources());
+                }}
+            }}
+
             @Override
             public boolean onJsAlert(WebView view, String url, String message, final JsResult result) {{
                 new AlertDialog.Builder(MainActivity.this)
