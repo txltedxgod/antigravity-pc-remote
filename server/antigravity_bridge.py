@@ -12,6 +12,8 @@ import ctypes
 import os
 import re
 import sqlite3
+import subprocess
+import time
 from pathlib import Path
 from ctypes import wintypes
 
@@ -38,20 +40,71 @@ def get_active_cdp_port(fallback=DEFAULT_CDP_PORT):
         logger.debug(f"Could not read DevToolsActivePort file: {e}")
     return fallback
 
-def ensure_antigravity_running():
-    """Launches Antigravity desktop executable if not currently running."""
+def is_antigravity_running():
+    """Checks whether Antigravity processes are currently active in the OS."""
     try:
-        import subprocess
-        out = subprocess.check_output("tasklist", shell=True).decode("utf-8", errors="ignore")
-        if "antigravity.exe" in out.lower() or "antigravity" in out.lower():
-            return True
-        if os.path.exists(ANTIGRAVITY_EXE):
-            logger.info("Antigravity not running. Launching automatically...")
-            subprocess.Popen([ANTIGRAVITY_EXE], shell=True)
-            return True
-    except Exception as e:
-        logger.error(f"Error checking/launching Antigravity: {e}")
+        import psutil
+        for p in psutil.process_iter(['name']):
+            name = (p.info.get('name') or '').lower()
+            if "antigravity" in name:
+                return True
+    except Exception:
+        try:
+            out = subprocess.check_output("tasklist", shell=True).decode("utf-8", errors="ignore")
+            if "antigravity" in out.lower():
+                return True
+        except Exception:
+            pass
     return False
+
+def launch_antigravity():
+    """Launches Antigravity desktop executable detached from the server."""
+    if is_antigravity_running():
+        return True
+    if os.path.exists(ANTIGRAVITY_EXE):
+        logger.info(f"Antigravity not running. Launching: {ANTIGRAVITY_EXE}")
+        exe_path = Path(ANTIGRAVITY_EXE)
+        try:
+            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+            subprocess.Popen(
+                [str(exe_path)],
+                cwd=str(exe_path.parent),
+                creationflags=flags,
+                close_fds=True
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error launching Antigravity: {e}")
+    return False
+
+def ensure_antigravity_running():
+    """Legacy alias for backward compatibility."""
+    return launch_antigravity()
+
+async def ensure_antigravity_ready(timeout=25):
+    """
+    Ensures Antigravity is up and responds via DevTools HTTP endpoint.
+    If not running, automatically launches it and waits until CDP is ready.
+    """
+    target = await find_antigravity_target()
+    if target:
+        return True, "already_running"
+
+    logger.info("Antigravity DevTools not reachable. Launching Antigravity...")
+    launch_antigravity()
+
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        await asyncio.sleep(1.0)
+        target = await find_antigravity_target()
+        if target:
+            elapsed = time.time() - start_time
+            logger.info(f"Antigravity became ready after {elapsed:.1f}s!")
+            await asyncio.sleep(1.5)  # Let Electron window settle
+            return True, "launched"
+
+    logger.warning("Antigravity launch timed out waiting for DevTools endpoint.")
+    return False, "timeout"
 
 async def find_antigravity_target(port=None):
     """Finds the active Antigravity conversation tab via DevTools HTTP endpoints."""
@@ -437,16 +490,19 @@ async def create_new_conversation(port=None):
 
 async def get_antigravity_status(port=None):
     """Returns the current connection status, active conversation title, and URL."""
+    running = is_antigravity_running()
     target = await find_antigravity_target(port)
     if not target:
         return {
             "connected": False,
+            "antigravity_running": running,
             "title": "Not Connected",
             "url": "",
             "message": "Antigravity DevTools not reachable"
         }
     return {
         "connected": True,
+        "antigravity_running": running,
         "title": target.get("title", "Active Conversation"),
         "url": target.get("url", ""),
         "id": target.get("id", "")
@@ -819,12 +875,21 @@ async def send_prompt_to_antigravity(prompt_text, image_path=None, conv_id=None,
     """
     Injects the given prompt text (and optional image file) directly into Antigravity's active chat canvas
     and triggers prompt submission. Supports switching conversation or starting a new one.
+    Automatically launches Antigravity if it is not currently running.
     """
     prompt_text = (prompt_text or "").strip()
     if not prompt_text and not image_path:
         return {"status": "error", "message": "Prompt text and image are both empty"}
 
-    # Handle conversation switching or new chat creation first if requested
+    # 1. Ensure Antigravity is running and connected via DevTools first!
+    ready, launch_status = await ensure_antigravity_ready(timeout=25)
+    if not ready:
+        return {
+            "status": "error",
+            "message": "Antigravity не удалось запустить или подключиться по DevTools CDP."
+        }
+
+    # 2. Handle conversation switching or new chat creation if requested
     if conv_id == "new":
         logger.info("Creating new conversation before sending prompt...")
         await create_new_conversation(port)
@@ -836,18 +901,9 @@ async def send_prompt_to_antigravity(prompt_text, image_path=None, conv_id=None,
 
     target = await find_antigravity_target(port)
     if not target:
-        ensure_antigravity_running()
-        for attempt in range(12):
-            await asyncio.sleep(1.0)
-            target = await find_antigravity_target(port)
-            if target:
-                logger.info(f"Antigravity became ready after {attempt + 1}s!")
-                break
-
-    if not target:
         return {
             "status": "error",
-            "message": "Antigravity DevTools endpoint not found. Make sure Antigravity is running."
+            "message": "Antigravity DevTools endpoint not found after ready check."
         }
 
     ws_url = target.get("webSocketDebuggerUrl")

@@ -161,6 +161,10 @@ async def handle_pc_action(request):
         success = win32_controls.lock_workstation()
         return json_response({"status": "ok" if success else "error", "action": action})
 
+    elif action in ("wake", "wake_screen"):
+        win32_controls.wake_screen()
+        return json_response({"status": "ok", "action": action})
+
     elif action == "screen_off":
         win32_controls.screen_off()
         return json_response({"status": "ok", "action": action})
@@ -235,6 +239,11 @@ async def handle_set_clipboard(request):
 async def handle_antigravity_status(request):
     status = await antigravity_bridge.get_antigravity_status()
     return json_response(status)
+
+async def handle_antigravity_launch(request):
+    win32_controls.wake_screen()
+    ready, status = await antigravity_bridge.ensure_antigravity_ready(timeout=25)
+    return json_response({"status": "ok" if ready else "error", "antigravity": status})
 
 async def handle_antigravity_conversations(request):
     convs = await antigravity_bridge.get_conversations_list()
@@ -316,6 +325,9 @@ async def handle_antigravity_send(request):
 
     logger.info(f"Queueing/injecting prompt to Antigravity ({len(prompt)} chars, img: {bool(image_path)}, conv: {conv_id})...")
 
+    # Wake screen so UI render loop is active
+    win32_controls.wake_screen()
+
     async with _antigravity_send_lock:
         res = await antigravity_bridge.send_prompt_to_antigravity(
             prompt, 
@@ -379,6 +391,7 @@ def create_app():
     app.router.add_get("/api/antigravity/chat", handle_antigravity_chat)
     app.router.add_post("/api/antigravity/send", handle_antigravity_send)
     app.router.add_post("/api/antigravity/stop", handle_antigravity_stop)
+    app.router.add_post("/api/antigravity/launch", handle_antigravity_launch)
     app.router.add_get("/download/apk", handle_download_apk)
 
     # Web Dashboard Static Fallback

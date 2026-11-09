@@ -116,7 +116,7 @@ function showToast(message, duration = 2000) {
   }, duration);
 }
 
-// Generic Fetch Wrapper with Smart Cloudflare Auto-Fallback
+// Generic Fetch Wrapper with Universal Auto-Fallback (Local IP <-> Cloudflare GitHub Sync)
 async function apiCall(path, method = "GET", body = null) {
   const url = getApiUrl(path);
   const opts = {
@@ -141,49 +141,38 @@ async function apiCall(path, method = "GET", body = null) {
   } catch (err) {
     clearTimeout(timeoutId);
 
-    // Intelligent Auto-Fallback: if local Wi-Fi drops or unreachable, retry via Cloudflare
-    if (isLocalHost) {
-      let targetCloud = cloudUrl;
-      if (!targetCloud) {
-        targetCloud = await discoverCloudUrl();
-      }
-
-      if (targetCloud) {
-        try {
-          const cloudBase = targetCloud.replace(/\/+$/, "");
-          const fallbackUrl = `${cloudBase}${path}`;
-          const retryRes = await fetch(fallbackUrl, {
-            method,
-            headers: { "Content-Type": "application/json" },
-            body: body ? JSON.stringify(body) : undefined
-          });
-          if (retryRes.ok) {
-            config.host = targetCloud;
-            localStorage.setItem("pc_remote_host", targetCloud);
-            showToast("🌐 Подключено через интернет (Cloudflare)!");
-            return await retryRes.json();
-          }
-        } catch (e) {}
-      }
-
+    // Universal Auto-Recovery: if connection drops or cloud tunnel expired (e.g. traveling in Georgia),
+    // automatically query GitHub for the latest active Cloudflare tunnel URL!
+    try {
       const freshCloud = await discoverCloudUrl(true);
-      if (freshCloud && freshCloud !== targetCloud) {
-        try {
-          const freshBase = freshCloud.replace(/\/+$/, "");
-          const freshRes = await fetch(`${freshBase}${path}`, {
-            method,
-            headers: { "Content-Type": "application/json" },
-            body: body ? JSON.stringify(body) : undefined
-          });
-          if (freshRes.ok) {
-            config.host = freshCloud;
-            localStorage.setItem("pc_remote_host", freshCloud);
-            showToast("🌐 Найден новый Cloudflare туннель!");
-            return await freshRes.json();
+      if (freshCloud) {
+        const cleanFresh = freshCloud.replace(/\/+$/, "");
+        const fallbackUrl = `${cleanFresh}${path}`;
+        const retryController = new AbortController();
+        const retryTimer = setTimeout(() => retryController.abort(), 9000);
+        const retryRes = await fetch(fallbackUrl, {
+          method,
+          headers: { "Content-Type": "application/json" },
+          body: body ? JSON.stringify(body) : undefined,
+          signal: retryController.signal
+        });
+        clearTimeout(retryTimer);
+
+        if (retryRes.ok) {
+          if (config.host !== cleanFresh) {
+            config.host = cleanFresh;
+            cloudUrl = cleanFresh;
+            localStorage.setItem("pc_remote_host", cleanFresh);
+            localStorage.setItem("pc_remote_cloud_url", cleanFresh);
+            showToast("🌐 Связь восстановлена через Cloudflare!");
           }
-        } catch (e2) {}
+          return await retryRes.json();
+        }
       }
+    } catch (fallbackErr) {
+      console.warn("Auto-recovery via GitHub Cloudflare failed:", fallbackErr);
     }
+
     throw err;
   }
 }
@@ -1822,16 +1811,16 @@ function setupEvents() {
 
   const btnSleepPc = document.getElementById("btnSleepPc");
   if (btnSleepPc) btnSleepPc.addEventListener("click", () => {
-    if (confirm("Перевести компьютер в спящий режим?")) {
+    if (confirm("⚠️ ВНИМАНИЕ: Если ты уезжаешь в поездку без ноутбука, при переводе в спящий режим связь с ПК пропадет, и разбудить его удаленно через интернет без домашнего роутера будет невозможно!\n\nТочно перевести ПК в сон?")) {
       triggerAction("sleep");
     }
   });
 
   const btnRestartPc = document.getElementById("btnRestartPc");
   if (btnRestartPc) btnRestartPc.addEventListener("click", () => {
-    if (confirm("⚠️ Перезагрузить ПК через 5 секунд? У вас будет возможность отменить.")) {
+    if (confirm("🔄 Перезагрузить ПК? Сервер перезапустится автоматически и восстановит связь через 15-20 секунд.")) {
       triggerAction("restart");
-      showToast("⏳ Перезагрузка через 5 сек! Нажмите «Отмена ребута», если нужно остановить.");
+      showToast("⏳ Перезагрузка ПК... Сервер и туннель поднимутся автоматически.");
     }
   });
 
@@ -1999,6 +1988,7 @@ function setupEvents() {
 // Initializer
 window.addEventListener("DOMContentLoaded", () => {
   setupEvents();
+  discoverCloudUrl();
   pollStatus();
   loadConversations();
   fetchChat(true);

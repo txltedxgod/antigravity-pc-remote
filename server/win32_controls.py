@@ -250,6 +250,15 @@ def lock_workstation():
 def screen_off():
     user32.SendMessageW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, MONITOR_OFF)
 
+def wake_screen():
+    """Wakes the monitor and graphics display stack from sleep."""
+    try:
+        user32.SendMessageW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, MONITOR_ON)
+        user32.mouse_event(1, 0, 0, 0, 0)
+        return True
+    except Exception:
+        return False
+
 def sleep_pc():
     set_keep_awake(False)
     return bool(powrprof.SetSuspendState(0, 1, 0))

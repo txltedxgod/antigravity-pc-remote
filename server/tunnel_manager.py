@@ -32,6 +32,25 @@ def _publish_url_to_github(url):
     except Exception as e:
         print(f"[Tunnel] Note on auto-publishing URL to GitHub: {e}")
 
+def _notify_telegram(url):
+    try:
+        actions_py = Path(r"C:\Users\dev\.gemini\antigravity\scratch\tg_assistant\actions.py")
+        if actions_py.exists():
+            msg = (
+                f"🟢 PC Remote онлайн на ПК!\n\n"
+                f"🌐 Активный адрес туннеля:\n{url}\n\n"
+                f"📱 Приложение на смартфоне подключается к нему автоматически через GitHub.\n"
+                f"✈️ Удалённый доступ готов к поездке!"
+            )
+            subprocess.run(
+                ["python", str(actions_py), "tg_send", "--to", "@trasherlvx", "--text", msg, "--account", "seocry"],
+                timeout=25,
+                capture_output=True
+            )
+            print("[Tunnel] Sent Telegram notification with active tunnel URL!")
+    except Exception as e:
+        print(f"[Tunnel] Telegram notification note: {e}")
+
 def get_current_tunnel_url():
     global _current_url
     with _lock:
@@ -82,6 +101,7 @@ def start_tunnel(local_port=8765):
                         try:
                             URL_CACHE_FILE.write_text(url, encoding="utf-8")
                             threading.Thread(target=_publish_url_to_github, args=(url,), daemon=True).start()
+                            threading.Thread(target=_notify_telegram, args=(url,), daemon=True).start()
                         except Exception:
                             pass
                         print(f"🔥 [Tunnel] Online! Global HTTPS URL: {url}")
