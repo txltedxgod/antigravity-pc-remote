@@ -620,16 +620,97 @@ function updateActiveConvTitle(convId, directTitle) {
     titleEl.textContent = "Новый диалог";
     return;
   }
-  if (directTitle) {
-    titleEl.textContent = directTitle;
-    return;
-  }
+  let title = directTitle;
+  let isPinned = false;
   const match = allConversations.find(c => c.id === convId);
-  if (match && match.title) {
-    titleEl.textContent = match.title;
-  } else {
-    titleEl.textContent = `Диалог ${convId.substring(0, 8)}`;
+  if (match) {
+    if (!title) title = match.title;
+    isPinned = !!match.isPinned;
   }
+
+  if (!title) {
+    title = `Диалог ${convId.substring(0, 8)}`;
+  }
+
+  if (isPinned) {
+    titleEl.innerHTML = `
+      <svg class="header-pin-icon" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/>
+      </svg>
+      <span>${escapeHtml(title)}</span>
+    `;
+  } else {
+    titleEl.textContent = title;
+  }
+}
+
+async function togglePinConversation(e, convId) {
+  e.stopPropagation();
+  e.preventDefault();
+  haptic(25);
+  const match = allConversations.find(c => c.id === convId);
+  const willBePinned = match ? !match.isPinned : true;
+  if (match) match.isPinned = willBePinned;
+
+  renderDrawerList(document.getElementById("drawerSearchInput")?.value || "");
+  updateActiveConvTitle(currentConvId);
+
+  try {
+    const res = await apiCall("/api/antigravity/conversation/pin", "POST", { id: convId, pinned: willBePinned });
+    if (res && res.status === "ok") {
+      showToast(willBePinned ? "📌 Диалог закреплён" : "Диалог откреплён");
+    }
+  } catch (err) {
+    showToast("Не удалось изменить статус закрепления");
+  }
+}
+
+function createDrawerItem(c) {
+  const item = document.createElement("button");
+  const isActive = (c.id === currentConvId) || (!currentConvId && c.isCurrent);
+  const isPinned = !!c.isPinned;
+  item.className = "drawer-item" + (isActive ? " active" : "") + (isPinned ? " pinned" : "");
+  item.dataset.id = c.id;
+
+  const timeLabel = formatConvTime(c.mtime);
+  const safeTitle = escapeHtml(c.title || `Диалог ${c.id.substring(0, 8)}`);
+
+  const pinIconSvg = `
+    <svg class="drawer-item-pin-badge" width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/>
+    </svg>
+  `;
+
+  const chatIconSvg = `
+    <svg class="drawer-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+    </svg>
+  `;
+
+  item.innerHTML = `
+    <div class="drawer-item-left">
+      ${isPinned ? pinIconSvg : chatIconSvg}
+      <span class="drawer-item-title">${safeTitle}</span>
+    </div>
+    <div class="drawer-item-actions">
+      ${timeLabel ? `<span class="drawer-item-time">${timeLabel}</span>` : ""}
+      <button class="btn-pin-toggle ${isPinned ? "pinned" : ""}" title="${isPinned ? "Открепить" : "Закрепить"}" type="button">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="${isPinned ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2">
+          <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/>
+        </svg>
+      </button>
+      ${isActive ? `<span class="drawer-item-active-dot"></span>` : ""}
+    </div>
+  `;
+
+  item.addEventListener("click", () => switchConversation(c.id, c.title));
+
+  const pinBtn = item.querySelector(".btn-pin-toggle");
+  if (pinBtn) {
+    pinBtn.addEventListener("click", (e) => togglePinConversation(e, c.id));
+  }
+
+  return item;
 }
 
 function renderDrawerList(filter = "") {
@@ -647,29 +728,45 @@ function renderDrawerList(filter = "") {
   }
 
   listEl.innerHTML = "";
-  filtered.forEach(c => {
-    const item = document.createElement("button");
-    const isActive = (c.id === currentConvId) || (!currentConvId && c.isCurrent);
-    item.className = "drawer-item" + (isActive ? " active" : "");
-    item.dataset.id = c.id;
 
-    const timeLabel = formatConvTime(c.mtime);
-    const safeTitle = escapeHtml(c.title || `Диалог ${c.id.substring(0, 8)}`);
+  const pinned = filtered.filter(c => !!c.isPinned);
+  const recent = filtered.filter(c => !c.isPinned);
 
-    item.innerHTML = `
-      <div class="drawer-item-left">
-        <svg class="drawer-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+  if (pinned.length > 0) {
+    const pinnedHeader = document.createElement("div");
+    pinnedHeader.className = "drawer-section-title";
+    pinnedHeader.innerHTML = `
+      <div class="drawer-section-title-left">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/>
         </svg>
-        <span class="drawer-item-title">${safeTitle}</span>
+        <span>Закреплённые</span>
       </div>
-      ${timeLabel ? `<span class="drawer-item-time">${timeLabel}</span>` : ""}
-      ${isActive ? `<span class="drawer-item-active-dot"></span>` : ""}
+      <span class="drawer-section-badge">${pinned.length}</span>
     `;
+    listEl.appendChild(pinnedHeader);
 
-    item.addEventListener("click", () => switchConversation(c.id, c.title));
-    listEl.appendChild(item);
-  });
+    pinned.forEach(c => {
+      listEl.appendChild(createDrawerItem(c));
+    });
+  }
+
+  if (recent.length > 0) {
+    if (pinned.length > 0 || query) {
+      const recentHeader = document.createElement("div");
+      recentHeader.className = "drawer-section-title";
+      recentHeader.innerHTML = `
+        <div class="drawer-section-title-left">
+          <span>${query ? "Остальные результаты" : "Недавние"}</span>
+        </div>
+      `;
+      listEl.appendChild(recentHeader);
+    }
+
+    recent.forEach(c => {
+      listEl.appendChild(createDrawerItem(c));
+    });
+  }
 }
 
 async function loadConversations() {

@@ -253,6 +253,16 @@ async def handle_antigravity_new_conversation(request):
     res = await antigravity_bridge.create_new_conversation()
     return json_response(res)
 
+async def handle_antigravity_pin_conversation(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+    conv_id = body.get("id", "")
+    pinned = body.get("pinned", None)
+    res = await antigravity_bridge.toggle_conversation_pin(conv_id, pinned)
+    return json_response(res)
+
 async def handle_antigravity_chat(request):
     conv_id = request.query.get("conversation_id", None)
     try:
@@ -343,6 +353,7 @@ def create_app():
     app.router.add_get("/api/antigravity/status", handle_antigravity_status)
     app.router.add_get("/api/antigravity/conversations", handle_antigravity_conversations)
     app.router.add_post("/api/antigravity/conversation/switch", handle_antigravity_switch_conversation)
+    app.router.add_post("/api/antigravity/conversation/pin", handle_antigravity_pin_conversation)
     app.router.add_post("/api/antigravity/conversation/new", handle_antigravity_new_conversation)
     app.router.add_get("/api/antigravity/chat", handle_antigravity_chat)
     app.router.add_post("/api/antigravity/send", handle_antigravity_send)

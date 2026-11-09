@@ -201,17 +201,158 @@ def get_all_brain_conversations(cache_ttl=4.0):
 
     return [dict(x) for x in _conv_cache["items"]]
 
+PINNED_FILE = Path(__file__).resolve().parent.parent / "pinned_conversations.json"
+
+_pinned_cache = {
+    "timestamp": 0,
+    "ids": set()
+}
+
+def load_local_pinned_ids():
+    if PINNED_FILE.exists():
+        try:
+            with open(PINNED_FILE, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+        except Exception:
+            pass
+    return set()
+
+def save_local_pinned_ids(pinned_set):
+    try:
+        with open(PINNED_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(pinned_set), f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save pinned ids: {e}")
+
+async def get_pinned_conversation_ids(port=None):
+    """Fetches pinned conversation IDs from live Antigravity CDP DOM merged with local persistence."""
+    global _pinned_cache
+    now = time.time()
+    if _pinned_cache["ids"] and (now - _pinned_cache["timestamp"] < 5.0):
+        return set(_pinned_cache["ids"])
+
+    local_pinned = load_local_pinned_ids()
+    cdp_pinned = set()
+
+    try:
+        target = await find_antigravity_target(port)
+        if target:
+            ws_url = target.get("webSocketDebuggerUrl")
+            if ws_url:
+                async with aiohttp.ClientSession() as session:
+                    async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=1.2)) as ws:
+                        js = """
+                        (() => {
+                            const pinned = [];
+                            document.querySelectorAll('[data-pinned="true"]').forEach(el => {
+                                const id = el.getAttribute('data-cascade-id') || el.getAttribute('data-conversation-id');
+                                if (id && !pinned.includes(id)) {
+                                    pinned.push(id);
+                                }
+                            });
+                            return pinned;
+                        })()
+                        """
+                        await ws.send_str(json.dumps({
+                            "id": 501,
+                            "method": "Runtime.evaluate",
+                            "params": {"expression": js, "returnByValue": True}
+                        }))
+                        while True:
+                            r = await ws.receive_json()
+                            if r.get("id") == 501:
+                                val = r.get("result", {}).get("result", {}).get("value", [])
+                                if isinstance(val, list):
+                                    cdp_pinned = set(val)
+                                break
+    except Exception as e:
+        logger.debug(f"Failed to get pinned IDs via CDP: {e}")
+
+    merged = local_pinned | cdp_pinned
+    if merged and merged != local_pinned:
+        save_local_pinned_ids(merged)
+
+    _pinned_cache["timestamp"] = now
+    _pinned_cache["ids"] = set(merged)
+    return merged
+
+async def toggle_conversation_pin(conv_id, pinned=None, port=None):
+    """Toggles or sets the pinned state for a conversation in PC Remote and triggers CDP toggle if available."""
+    if not conv_id:
+        return {"status": "error", "message": "Missing conversation ID"}
+
+    current_pins = load_local_pinned_ids()
+    if pinned is None:
+        new_state = (conv_id not in current_pins)
+    else:
+        new_state = bool(pinned)
+
+    if new_state:
+        current_pins.add(conv_id)
+    else:
+        current_pins.discard(conv_id)
+
+    save_local_pinned_ids(current_pins)
+    global _pinned_cache
+    _pinned_cache["timestamp"] = time.time()
+    _pinned_cache["ids"] = set(current_pins)
+
+    # Attempt to click pin button in Antigravity DOM if visible
+    cdp_triggered = False
+    try:
+        target = await find_antigravity_target(port)
+        if target:
+            ws_url = target.get("webSocketDebuggerUrl")
+            if ws_url:
+                async with aiohttp.ClientSession() as session:
+                    async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=1.2)) as ws:
+                        js = f"""
+                        (() => {{
+                            const row = document.querySelector('[data-cascade-id="{conv_id}"]');
+                            if (!row) return {{ found: false }};
+                            const btn = row.querySelector('button[aria-label="Pin conversation"], button[aria-label="Unpin conversation"]');
+                            if (btn) {{
+                                btn.click();
+                                return {{ found: true, clicked: true }};
+                            }}
+                            return {{ found: true, clicked: false }};
+                        }})()
+                        """
+                        await ws.send_str(json.dumps({
+                            "id": 502,
+                            "method": "Runtime.evaluate",
+                            "params": {"expression": js, "returnByValue": True}
+                        }))
+                        while True:
+                            r = await ws.receive_json()
+                            if r.get("id") == 502:
+                                res = r.get("result", {}).get("result", {}).get("value", {})
+                                cdp_triggered = res.get("clicked", False)
+                                break
+    except Exception as e:
+        logger.debug(f"CDP pin toggle error: {e}")
+
+    return {
+        "status": "ok",
+        "id": conv_id,
+        "isPinned": new_state,
+        "cdp_synced": cdp_triggered
+    }
+
 async def get_conversations_list(port=None):
-    """Retrieves all active and historical conversations from brain/."""
+    """Retrieves all active and historical conversations from brain/, marking pinned ones."""
     active_id = await get_active_conversation_id(port)
+    pinned_ids = await get_pinned_conversation_ids(port)
     convs = get_all_brain_conversations()
     for c in convs:
         c["isCurrent"] = (c["id"] == active_id)
+        c["isPinned"] = (c["id"] in pinned_ids)
 
     return {
         "status": "ok",
         "active_id": active_id,
         "total": len(convs),
+        "pinned_count": len([c for c in convs if c.get("isPinned")]),
         "conversations": convs
     }
 
