@@ -56,6 +56,14 @@ async def test_endpoints():
             assert "agent_status" in chat_res
             assert "messages" in chat_res
 
+        # 6. Antigravity Conversations List Endpoint
+        async with s.get("http://127.0.0.1:8769/api/antigravity/conversations") as r:
+            convs_res = await r.json()
+            print("Conversations status:", convs_res.get("status"), "Total:", convs_res.get("total"))
+            assert convs_res["status"] == "ok"
+            assert "conversations" in convs_res
+            assert convs_res.get("total", 0) > 0
+
     await runner.cleanup()
     print("All server endpoint tests passed successfully!")
 

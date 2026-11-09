@@ -14,6 +14,7 @@ let config = {
 let isConnected = false;
 let activeTab = "tabAntigravity";
 let currentConvId = "";
+let allConversations = [];
 let lastMessageCount = 0;
 let isSwitchingConv = false;
 let isSendingPrompt = false;
@@ -351,6 +352,7 @@ async function fetchChat(autoScroll = true) {
     if (currentConvId === "new") {
       if (res.conversation_id && res.conversation_id !== "new") {
         currentConvId = res.conversation_id;
+        updateActiveConvTitle(currentConvId);
         loadConversations();
       } else {
         if (emptyState) emptyState.style.display = "flex";
@@ -362,7 +364,10 @@ async function fetchChat(autoScroll = true) {
     } else if (res.conversation_id && !currentConvId) {
       if (res.conversation_id !== "new") {
         currentConvId = res.conversation_id;
+        updateActiveConvTitle(currentConvId);
       }
+    } else if (currentConvId && currentConvId !== "new") {
+      updateActiveConvTitle(currentConvId);
     }
 
     // Update Agent Live Status
@@ -549,50 +554,175 @@ async function sendPrompt() {
   }
 }
 
-// Load Conversations Dropdown
-async function loadConversations() {
-  const select = document.getElementById("conversationSelect");
-  if (!select || isSwitchingConv) return;
+// --- CONVERSATION DRAWER & SELECTION ---
+function formatConvTime(mtime) {
+  if (!mtime) return "";
+  try {
+    const d = new Date(mtime * 1000);
+    const now = new Date();
+    const isToday = d.toDateString() === now.toDateString();
+    const timeStr = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (isToday) return timeStr;
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    if (d.toDateString() === yesterday.toDateString()) return "Вчера";
+    return `${d.getDate().toString().padStart(2, "0")}.${(d.getMonth() + 1).toString().padStart(2, "0")}`;
+  } catch (e) {
+    return "";
+  }
+}
 
+function updateActiveConvTitle(convId, directTitle) {
+  const titleEl = document.getElementById("activeConvTitle");
+  if (!titleEl) return;
+  if (!convId || convId === "new") {
+    titleEl.textContent = "Новый диалог";
+    return;
+  }
+  if (directTitle) {
+    titleEl.textContent = directTitle;
+    return;
+  }
+  const match = allConversations.find(c => c.id === convId);
+  if (match && match.title) {
+    titleEl.textContent = match.title;
+  } else {
+    titleEl.textContent = `Диалог ${convId.substring(0, 8)}`;
+  }
+}
+
+function renderDrawerList(filter = "") {
+  const listEl = document.getElementById("drawerList");
+  if (!listEl) return;
+
+  const query = (filter || "").toLowerCase().trim();
+  const filtered = query
+    ? allConversations.filter(c => (c.title && c.title.toLowerCase().includes(query)) || c.id.toLowerCase().includes(query))
+    : allConversations;
+
+  if (filtered.length === 0) {
+    listEl.innerHTML = `<div class="loading-state-text">${query ? "Ничего не найдено" : "Нет сохраненных диалогов"}</div>`;
+    return;
+  }
+
+  listEl.innerHTML = "";
+  filtered.forEach(c => {
+    const item = document.createElement("button");
+    const isActive = (c.id === currentConvId) || (!currentConvId && c.isCurrent);
+    item.className = "drawer-item" + (isActive ? " active" : "");
+    item.dataset.id = c.id;
+
+    const timeLabel = formatConvTime(c.mtime);
+    const safeTitle = escapeHtml(c.title || `Диалог ${c.id.substring(0, 8)}`);
+
+    item.innerHTML = `
+      <div class="drawer-item-left">
+        <svg class="drawer-item-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg>
+        <span class="drawer-item-title">${safeTitle}</span>
+      </div>
+      ${timeLabel ? `<span class="drawer-item-time">${timeLabel}</span>` : ""}
+      ${isActive ? `<span class="drawer-item-active-dot"></span>` : ""}
+    `;
+
+    item.addEventListener("click", () => switchConversation(c.id, c.title));
+    listEl.appendChild(item);
+  });
+}
+
+async function loadConversations() {
+  if (isSwitchingConv) return;
   try {
     const res = await apiCall("/api/antigravity/conversations");
-    if (!res || !res.conversations || res.conversations.length === 0) return;
+    if (!res || !res.conversations) return;
 
-    const currentVal = currentConvId || select.value;
-    const items = res.conversations;
+    allConversations = res.conversations;
+    const badge = document.getElementById("drawerCountBadge");
+    if (badge) badge.textContent = allConversations.length;
 
-    select.innerHTML = "";
-    
-    // Auto active option
-    const optCurrent = document.createElement("option");
-    optCurrent.value = "";
-    optCurrent.textContent = "● Активный чат";
-    select.appendChild(optCurrent);
-
-    // New conversation option
-    const optNew = document.createElement("option");
-    optNew.value = "new";
-    optNew.textContent = "+ Новый диалог...";
-    if (currentVal === "new") {
-      optNew.selected = true;
+    if (!currentConvId && res.active_id) {
+      currentConvId = res.active_id;
     }
-    select.appendChild(optNew);
+    updateActiveConvTitle(currentConvId);
 
-    items.forEach(c => {
-      const opt = document.createElement("option");
-      opt.value = c.id;
-      opt.textContent = c.title + (c.isCurrent ? " (активен)" : "");
-      if (currentVal === "new") {
-        // keep new
-      } else if (c.isCurrent && !currentVal) {
-        opt.selected = true;
-        currentConvId = c.id;
-      } else if (currentVal === c.id) {
-        opt.selected = true;
-      }
-      select.appendChild(opt);
-    });
-  } catch (e) {}
+    const searchInput = document.getElementById("drawerSearchInput");
+    renderDrawerList(searchInput ? searchInput.value : "");
+  } catch (e) {
+    console.error("Failed to load conversations:", e);
+  }
+}
+
+async function switchConversation(convId, optTitle) {
+  if (!convId || convId === currentConvId) {
+    closeSidebar();
+    return;
+  }
+  haptic(20);
+  closeSidebar();
+
+  currentConvId = convId;
+  updateActiveConvTitle(convId, optTitle);
+  isSwitchingConv = true;
+  lastMessageCount = 0;
+
+  const feed = document.getElementById("chatFeed");
+  const emptyState = document.getElementById("chatEmptyState");
+  if (feed) feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
+  if (emptyState) emptyState.style.display = "none";
+
+  showToast("Переключаю диалог...");
+  try {
+    await apiCall("/api/antigravity/conversation/switch", "POST", { id: convId });
+    await fetchChat(true);
+    renderDrawerList();
+  } catch (e) {
+    showToast("Ошибка переключения диалога");
+  } finally {
+    isSwitchingConv = false;
+  }
+}
+
+async function startNewConversation() {
+  haptic(30);
+  closeSidebar();
+
+  isSwitchingConv = true;
+  currentConvId = "new";
+  lastMessageCount = 0;
+  updateActiveConvTitle("new");
+
+  const feed = document.getElementById("chatFeed");
+  const emptyState = document.getElementById("chatEmptyState");
+  if (feed) feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
+  if (emptyState) emptyState.style.display = "flex";
+
+  showToast("Создаю новый диалог...");
+  try {
+    await apiCall("/api/antigravity/conversation/new", "POST");
+    showToast("✨ Новый диалог готов к сообщениям!");
+    await loadConversations();
+  } catch (e) {
+    showToast("Ошибка создания чата");
+  } finally {
+    isSwitchingConv = false;
+  }
+}
+
+function openSidebar() {
+  haptic(15);
+  const drawer = document.getElementById("conversationsDrawer");
+  const backdrop = document.getElementById("drawerBackdrop");
+  if (drawer) drawer.classList.add("open");
+  if (backdrop) backdrop.classList.add("active");
+  loadConversations();
+}
+
+function closeSidebar() {
+  const drawer = document.getElementById("conversationsDrawer");
+  const backdrop = document.getElementById("drawerBackdrop");
+  if (drawer) drawer.classList.remove("open");
+  if (backdrop) backdrop.classList.remove("active");
 }
 
 // --- TELEMETRY & STATUS ---
@@ -886,72 +1016,25 @@ function setupEvents() {
     });
   });
 
-  // Conversation Selector
-  const convSelect = document.getElementById("conversationSelect");
-  if (convSelect) {
-    convSelect.addEventListener("change", async () => {
-      haptic(20);
-      const val = convSelect.value;
-      if (val === "new") {
-        currentConvId = "new";
-        lastMessageCount = 0;
-        const feed = document.getElementById("chatFeed");
-        const emptyState = document.getElementById("chatEmptyState");
-        if (feed) feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
-        if (emptyState) emptyState.style.display = "flex";
-        showToast("Создаю новый диалог...");
-        try {
-          await apiCall("/api/antigravity/conversation/new", "POST");
-          showToast("✨ Новый диалог готов к сообщениям!");
-        } catch (e) {
-          showToast("Ошибка создания чата");
-        }
-        return;
-      }
-      currentConvId = val;
-      isSwitchingConv = true;
-      lastMessageCount = 0;
-      showToast("Переключаю диалог...");
-      try {
-        if (val) {
-          await apiCall("/api/antigravity/conversation/switch", "POST", { id: val });
-        }
-        await fetchChat(true);
-      } catch (e) {
-        showToast("Ошибка переключения чата");
-      } finally {
-        isSwitchingConv = false;
-      }
-    });
-  }
-
-  // New Chat Button
+  // Sidebar Drawer Events
+  const btnToggleSidebar = document.getElementById("btnToggleSidebar");
+  const btnOpenSidebar = document.getElementById("btnOpenSidebar");
+  const btnCloseDrawer = document.getElementById("btnCloseDrawer");
+  const drawerBackdrop = document.getElementById("drawerBackdrop");
+  const btnDrawerNewChat = document.getElementById("btnDrawerNewChat");
   const btnNewChat = document.getElementById("btnNewChat");
-  if (btnNewChat) {
-    btnNewChat.addEventListener("click", async () => {
-      haptic(30);
-      isSwitchingConv = true;
-      currentConvId = "new";
-      lastMessageCount = 0;
+  const drawerSearchInput = document.getElementById("drawerSearchInput");
 
-      const feed = document.getElementById("chatFeed");
-      const emptyState = document.getElementById("chatEmptyState");
-      if (feed) feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
-      if (emptyState) emptyState.style.display = "flex";
+  if (btnToggleSidebar) btnToggleSidebar.addEventListener("click", openSidebar);
+  if (btnOpenSidebar) btnOpenSidebar.addEventListener("click", openSidebar);
+  if (btnCloseDrawer) btnCloseDrawer.addEventListener("click", closeSidebar);
+  if (drawerBackdrop) drawerBackdrop.addEventListener("click", closeSidebar);
+  if (btnDrawerNewChat) btnDrawerNewChat.addEventListener("click", startNewConversation);
+  if (btnNewChat) btnNewChat.addEventListener("click", startNewConversation);
 
-      const convSelect = document.getElementById("conversationSelect");
-      if (convSelect) convSelect.value = "new";
-
-      showToast("Создаю новый диалог...");
-      try {
-        await apiCall("/api/antigravity/conversation/new", "POST");
-        showToast("✨ Новый диалог готов!");
-        loadConversations();
-      } catch (e) {
-        showToast("Ошибка создания чата");
-      } finally {
-        isSwitchingConv = false;
-      }
+  if (drawerSearchInput) {
+    drawerSearchInput.addEventListener("input", (e) => {
+      renderDrawerList(e.target.value);
     });
   }
 
@@ -1196,6 +1279,7 @@ function setupEvents() {
 window.addEventListener("DOMContentLoaded", () => {
   setupEvents();
   pollStatus();
+  loadConversations();
   fetchChat(true);
   fetchActiveWindows();
 

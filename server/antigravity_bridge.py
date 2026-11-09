@@ -110,59 +110,87 @@ def focus_antigravity_window():
         logger.error(f"Error focusing window: {e}")
     return False
 
-async def get_conversations_list(port=None):
-    """Retrieves all active and recent conversations from Antigravity sidebar."""
-    target = await find_antigravity_target(port)
-    if not target:
-        return {"status": "error", "message": "Antigravity not found", "conversations": []}
+import time
 
-    ws_url = target.get("webSocketDebuggerUrl")
-    if not ws_url:
-        return {"status": "error", "message": "No CDP WebSocket URL", "conversations": []}
+_conv_cache = {
+    "timestamp": 0,
+    "items": []
+}
 
+def get_all_brain_conversations(cache_ttl=4.0):
+    """Scans BRAIN_DIR for all conversation folders, extracts clean title and timestamps."""
+    global _conv_cache
+    now = time.time()
+    if _conv_cache["items"] and (now - _conv_cache["timestamp"] < cache_ttl):
+        return [dict(x) for x in _conv_cache["items"]]
+
+    convs = []
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=4.0)) as ws:
-                js = """
-                (() => {
-                    const links = Array.from(document.querySelectorAll('a[href*="/c/"]')).map(a => {
-                        const row = a.closest('div[class*="group"]') || a.parentElement;
-                        const text = row ? row.innerText.split('\\n')[0].trim() : '';
-                        const href = a.getAttribute('href') || '';
-                        const parts = href.split('/c/');
-                        const id = parts.length > 1 ? parts[1].split('?')[0] : '';
-                        return {
-                            id: id,
-                            title: text || 'Диалог ' + id.substring(0, 8),
-                            isCurrent: window.location.href.includes(id)
-                        };
-                    }).filter(x => x.id && x.title);
-                    return {
-                        currentUrl: window.location.href,
-                        conversations: links
-                    };
-                })()
-                """
-                await ws.send_str(json.dumps({
-                    "id": 201,
-                    "method": "Runtime.evaluate",
-                    "params": {"expression": js, "returnByValue": True}
-                }))
-                while True:
-                    reply = await ws.receive_json()
-                    if reply.get("id") == 201:
-                        data = reply.get("result", {}).get("result", {}).get("value", {})
-                        return {
-                            "status": "ok",
-                            "current_url": data.get("currentUrl", ""),
-                            "conversations": data.get("conversations", [])
-                        }
+        if BRAIN_DIR.exists():
+            for d in BRAIN_DIR.iterdir():
+                if not d.is_dir() or d.name.startswith("."):
+                    continue
+                log_path = d / ".system_generated" / "logs" / "transcript.jsonl"
+                if not log_path.exists():
+                    continue
+                try:
+                    mtime = log_path.stat().st_mtime
+                except Exception:
+                    mtime = d.stat().st_mtime
+
+                title = ""
+                try:
+                    with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+                        for line in f:
+                            if '"type":"USER_INPUT"' in line:
+                                obj = json.loads(line)
+                                raw = obj.get("content", "")
+                                if isinstance(raw, list):
+                                    parts = [p.get("text", "") for p in raw if isinstance(p, dict)]
+                                    raw = " ".join(parts)
+                                if "<USER_REQUEST>" in raw:
+                                    m = re.search(r"<USER_REQUEST>(.*?)</USER_REQUEST>", raw, re.DOTALL)
+                                    if m:
+                                        raw = m.group(1)
+                                title = clean_user_text(raw).replace("\n", " ").strip()
+                                title = re.sub(r"\s+", " ", title)[:70]
+                                if title:
+                                    break
+                except Exception:
+                    pass
+
+                if not title:
+                    title = f"Диалог {d.name[:8]}"
+
+                convs.append({
+                    "id": d.name,
+                    "title": title,
+                    "mtime": mtime
+                })
+        convs.sort(key=lambda x: x["mtime"], reverse=True)
+        _conv_cache["timestamp"] = now
+        _conv_cache["items"] = convs
     except Exception as e:
-        logger.error(f"Error fetching conversations: {e}")
-        return {"status": "error", "message": str(e), "conversations": []}
+        logger.error(f"Error scanning brain conversations: {e}")
+
+    return [dict(x) for x in _conv_cache["items"]]
+
+async def get_conversations_list(port=None):
+    """Retrieves all active and historical conversations from brain/."""
+    active_id = await get_active_conversation_id(port)
+    convs = get_all_brain_conversations()
+    for c in convs:
+        c["isCurrent"] = (c["id"] == active_id)
+
+    return {
+        "status": "ok",
+        "active_id": active_id,
+        "total": len(convs),
+        "conversations": convs
+    }
 
 async def switch_conversation(conv_id, port=None):
-    """Navigates Antigravity UI to the specified conversation ID."""
+    """Navigates Antigravity UI to the specified conversation ID while preserving project context."""
     if not conv_id:
         return {"status": "error", "message": "Missing conversation ID"}
 
@@ -181,7 +209,8 @@ async def switch_conversation(conv_id, port=None):
                         link.click();
                         return {{ success: true, method: 'click' }};
                     }} else {{
-                        window.location.href = '/c/{conv_id}';
+                        const currentSearch = window.location.search || '';
+                        window.location.href = '/c/{conv_id}' + currentSearch;
                         return {{ success: true, method: 'location' }};
                     }}
                 }})()
@@ -195,7 +224,7 @@ async def switch_conversation(conv_id, port=None):
                     reply = await ws.receive_json()
                     if reply.get("id") == 202:
                         break
-                await asyncio.sleep(1.2)
+                await asyncio.sleep(0.8)
                 return {"status": "ok", "message": f"Switched to {conv_id}"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
