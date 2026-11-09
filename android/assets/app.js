@@ -567,6 +567,31 @@ async function pollTelemetry() {
   }
 }
 
+// 6. Live Screen Snapshot Gatherer for Monitor Tab
+let currentMonitorScreenshot = "";
+async function loadMonitorScreenshot() {
+  const ph = document.getElementById("screenPlaceholder");
+  const img = document.getElementById("screenPreviewImg");
+  try {
+    const span = ph ? ph.querySelector("span") : null;
+    if (span) span.textContent = "Захват экрана ПК...";
+    const res = await apiCall("/api/pc/screenshot");
+    if (res && res.status === "ok" && res.image) {
+      currentMonitorScreenshot = res.image;
+      if (img) {
+        img.src = res.image;
+        img.style.display = "block";
+      }
+      if (ph) ph.style.display = "none";
+    } else {
+      if (span) span.textContent = "Не удалось захватить экран";
+    }
+  } catch (e) {
+    const span = ph ? ph.querySelector("span") : null;
+    if (span) span.textContent = "Ошибка получения снимка";
+  }
+}
+
 function updateSendButtonState() {
   const input = document.getElementById("promptInput");
   const btn = document.getElementById("btnSendPrompt");
@@ -1337,6 +1362,7 @@ function setupEvents() {
         fetchActiveWindows();
       } else if (targetId === "tabMonitor") {
         pollTelemetry();
+        if (!currentMonitorScreenshot) loadMonitorScreenshot();
       }
     });
   });
@@ -1374,11 +1400,14 @@ function setupEvents() {
   const btnVoice = document.getElementById("btnVoiceInput");
   if (btnVoice) btnVoice.addEventListener("click", toggleVoiceInput);
 
-  // Fullscreen Image Modal Events
-  const previewImg = document.getElementById("imagePreviewImg");
-  if (previewImg) {
-    previewImg.addEventListener("click", () => {
-      if (currentAttachedImage) openImageModal(currentAttachedImage, currentAttachedFileName || "Снимок экрана");
+  // Fullscreen Image Modal Events for Chat Composer
+  const previewBox = document.getElementById("imagePreviewContainer");
+  if (previewBox) {
+    previewBox.addEventListener("click", (e) => {
+      if (e.target.closest("#btnRemoveAttachment")) return;
+      if (currentAttachedImage) {
+        openImageModal(currentAttachedImage, currentAttachedFileName || "Снимок экрана ПК");
+      }
     });
   }
 
@@ -1390,6 +1419,27 @@ function setupEvents() {
     imgModal.addEventListener("click", (e) => {
       if (e.target === imgModal || e.target.classList.contains("image-modal-body")) {
         closeImageModal();
+      }
+    });
+  }
+
+  // Live Screen Snapshot in Monitor Tab
+  const btnRefreshScreen = document.getElementById("btnRefreshScreenSnapshot");
+  if (btnRefreshScreen) {
+    btnRefreshScreen.addEventListener("click", () => {
+      haptic(25);
+      showToast("📸 Обновление снимка экрана...");
+      loadMonitorScreenshot();
+    });
+  }
+
+  const screenBox = document.getElementById("screenPreviewBox");
+  if (screenBox) {
+    screenBox.addEventListener("click", () => {
+      if (currentMonitorScreenshot) {
+        openImageModal(currentMonitorScreenshot, "Экран ПК (Live View)");
+      } else {
+        loadMonitorScreenshot();
       }
     });
   }
