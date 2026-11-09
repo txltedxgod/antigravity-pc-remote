@@ -262,6 +262,8 @@ async def handle_antigravity_chat(request):
     res = await antigravity_bridge.get_conversation_chat(conv_id=conv_id, limit=limit)
     return json_response(res)
 
+_antigravity_send_lock = asyncio.Lock()
+
 async def handle_antigravity_send(request):
     try:
         body = await request.json()
@@ -302,15 +304,17 @@ async def handle_antigravity_send(request):
         except Exception as e:
             logger.error(f"Failed to decode uploaded image: {e}")
 
-    logger.info(f"Injecting prompt to Antigravity ({len(prompt)} chars, img: {bool(image_path)}, conv: {conv_id})...")
+    logger.info(f"Queueing/injecting prompt to Antigravity ({len(prompt)} chars, img: {bool(image_path)}, conv: {conv_id})...")
 
-    res = await antigravity_bridge.send_prompt_to_antigravity(
-        prompt, 
-        image_path=image_path, 
-        conv_id=conv_id, 
-        focus_window=focus_win
-    )
-    return json_response(res)
+    async with _antigravity_send_lock:
+        res = await antigravity_bridge.send_prompt_to_antigravity(
+            prompt, 
+            image_path=image_path, 
+            conv_id=conv_id, 
+            focus_window=focus_win
+        )
+        await asyncio.sleep(0.3)
+        return json_response(res)
 
 async def handle_download_apk(request):
     if not APK_PATH.exists():

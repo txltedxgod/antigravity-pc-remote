@@ -18,6 +18,7 @@ let allConversations = [];
 let lastMessageCount = 0;
 let isSwitchingConv = false;
 let isSendingPrompt = false;
+let currentAgentStatus = "idle";
 
 // Active screenshot attachment
 let currentAttachedImage = null; // Base64 dataURL
@@ -331,6 +332,34 @@ function updateSendButtonState() {
   } else {
     btn.classList.remove("active");
   }
+
+  // Antigravity Queue Mode: adjust input placeholder and button tooltip
+  const isAgentBusy = (currentAgentStatus === "executing" || currentAgentStatus === "thinking");
+  if (isAgentBusy) {
+    if (input && (!input.value || input.placeholder === "Спросить Antigravity...")) {
+      input.placeholder = "Сообщение в очередь...";
+    }
+    btn.setAttribute("title", "Добавить в очередь");
+  } else {
+    if (input && input.placeholder === "Сообщение в очередь...") {
+      input.placeholder = "Спросить Antigravity...";
+    }
+    btn.setAttribute("title", "Отправить сообщение");
+  }
+}
+
+// Dedicated multi-frame smooth scroll to bottom for chat feed
+function scrollChatToBottom(force = false) {
+  const feed = document.getElementById("chatFeed");
+  if (!feed) return;
+  const doScroll = () => {
+    feed.scrollTop = feed.scrollHeight;
+  };
+  doScroll();
+  requestAnimationFrame(doScroll);
+  setTimeout(doScroll, 40);
+  setTimeout(doScroll, 120);
+  setTimeout(doScroll, 300);
 }
 
 // --- CHAT LOGIC ---
@@ -375,12 +404,14 @@ async function fetchChat(autoScroll = true) {
     // Update Agent Live Status
     const agentStatus = res.agent_status || "idle";
     const currentAction = res.current_action || "";
+    currentAgentStatus = agentStatus;
+    updateSendButtonState();
 
     if (statusPill && statusLabel) {
       if (agentStatus === "executing") {
         statusPill.style.display = "flex";
         statusPill.className = "agent-live-pill executing";
-        statusLabel.textContent = "Действие...";
+        statusLabel.textContent = currentAction ? currentAction : "Действие...";
       } else if (agentStatus === "thinking") {
         statusPill.style.display = "flex";
         statusPill.className = "agent-live-pill thinking";
@@ -394,7 +425,7 @@ async function fetchChat(autoScroll = true) {
     if (activityBanner && activityText) {
       if (agentStatus === "executing" || agentStatus === "thinking") {
         activityBanner.style.display = "flex";
-        activityText.textContent = currentAction ? currentAction : (agentStatus === "thinking" ? "Размышляет..." : "Агент выполняет задачу...");
+        activityText.textContent = currentAction ? currentAction : (agentStatus === "thinking" ? "Размышляет над ответом..." : "Агент выполняет задачу...");
       } else {
         // Absolutely idle: immediately hide banner
         activityBanner.style.display = "none";
@@ -412,8 +443,10 @@ async function fetchChat(autoScroll = true) {
 
     if (emptyState) emptyState.style.display = "none";
 
+    const isNearBottom = (feed.scrollHeight - feed.scrollTop - feed.clientHeight) < 140;
+
     // Only re-render if count or last message changed
-    if (messages.length !== lastMessageCount || isSendingPrompt) {
+    if (messages.length !== lastMessageCount || isSendingPrompt || isSwitchingConv) {
       lastMessageCount = messages.length;
       isSendingPrompt = false;
 
@@ -455,10 +488,8 @@ async function fetchChat(autoScroll = true) {
         feed.appendChild(bubble);
       });
 
-      if (autoScroll) {
-        setTimeout(() => {
-          feed.scrollTop = feed.scrollHeight;
-        }, 30);
+      if (autoScroll || isSwitchingConv || isNearBottom) {
+        scrollChatToBottom(true);
       }
     }
   } catch (err) {
@@ -469,7 +500,6 @@ async function fetchChat(autoScroll = true) {
 // Send Prompt to Antigravity (Supports text and screenshots)
 async function sendPrompt() {
   const input = document.getElementById("promptInput");
-  const chkFocus = document.getElementById("chkFocusWindow");
   const btn = document.getElementById("btnSendPrompt");
   if (!input || !btn) return;
 
@@ -485,6 +515,8 @@ async function sendPrompt() {
   btn.disabled = true;
   isSendingPrompt = true;
 
+  const isAgentBusy = (currentAgentStatus === "executing" || currentAgentStatus === "thinking");
+
   // Optimistic UI: append user message to feed immediately
   const feed = document.getElementById("chatFeed");
   const emptyState = document.getElementById("chatEmptyState");
@@ -498,15 +530,17 @@ async function sendPrompt() {
     if (attachedImg) {
       imageHtml = `<img class="msg-attachment-thumb" src="${attachedImg}" alt="Attached Screenshot">`;
     }
+    const queuedHtml = isAgentBusy ? `<div class="msg-queued-badge"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg> В очереди</div>` : "";
     bubble.innerHTML = `
       <div class="msg-bubble-user">
+        ${queuedHtml}
         ${imageHtml}
         ${text ? `<div>${escapeHtml(text)}</div>` : ""}
       </div>
       <div class="msg-meta">${nowStr}</div>
     `;
     feed.appendChild(bubble);
-    feed.scrollTop = feed.scrollHeight;
+    scrollChatToBottom(true);
   }
 
   // Clear input & reset attachment
@@ -519,7 +553,7 @@ async function sendPrompt() {
   const activityText = document.getElementById("agentActivityText");
   if (activityBanner && activityText) {
     activityBanner.style.display = "flex";
-    activityText.textContent = "Передано в Antigravity. Ожидание ответа...";
+    activityText.textContent = isAgentBusy ? "Добавлено в очередь Antigravity..." : "Передано в Antigravity. Ожидание ответа...";
   }
 
   try {
@@ -527,12 +561,16 @@ async function sendPrompt() {
     const res = await apiCall("/api/antigravity/send", "POST", {
       text: text,
       image: attachedImg,
-      focus: chkFocus ? chkFocus.checked : false,
+      focus: false,
       conversation_id: isNew ? "new" : (currentConvId || null)
     });
 
     if (res.status === "ok") {
-      showToast("✨ Запрос отправлен в IDE!");
+      if (isAgentBusy) {
+        showToast("⏳ Сообщение добавлено в очередь Antigravity!");
+      } else {
+        showToast("✨ Запрос отправлен в IDE!");
+      }
       if (isNew) {
         setTimeout(async () => {
           currentConvId = "";
@@ -677,6 +715,7 @@ async function switchConversation(convId, optTitle) {
   try {
     await apiCall("/api/antigravity/conversation/switch", "POST", { id: convId });
     await fetchChat(true);
+    scrollChatToBottom(true);
     renderDrawerList();
   } catch (e) {
     showToast("Ошибка переключения диалога");

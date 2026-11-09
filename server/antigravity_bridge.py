@@ -473,28 +473,38 @@ def parse_conversation_history(conv_id, limit=50):
             last = parsed_steps[-1]
             ltype = last.get("type")
             lstatus = last.get("status")
-            if ltype == "PLANNER_RESPONSE":
+
+            # Check if this last step is stale (> 3 minutes ago)
+            is_stale = False
+            last_created = last.get("created_at")
+            if last_created:
+                try:
+                    import datetime
+                    dt = datetime.datetime.fromisoformat(last_created.replace("Z", "+00:00"))
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    if (now - dt).total_seconds() > 180:
+                        is_stale = True
+                except Exception:
+                    pass
+
+            if is_stale:
+                agent_status = "idle"
+                current_action = ""
+            elif ltype == "PLANNER_RESPONSE":
                 tool_calls = last.get("tool_calls", [])
                 if tool_calls:
                     agent_status = "executing"
                     tool = tool_calls[0]
                     current_action = tool.get("args", {}).get("toolSummary", tool.get("name", "Команда"))
-                elif lstatus == "DONE":
-                    agent_status = "idle"
-                    current_action = ""
-                elif last.get("thinking"):
+                elif last.get("thinking") and not last.get("content"):
                     agent_status = "thinking"
                     current_action = "Размышляет..."
                 else:
                     agent_status = "idle"
                     current_action = ""
             elif ltype == "GENERIC":
-                if lstatus != "DONE":
-                    agent_status = "executing"
-                    current_action = "Обрабатывает результат..."
-                else:
-                    agent_status = "idle"
-                    current_action = ""
+                agent_status = "thinking"
+                current_action = "Размышляет над ответом..."
             elif ltype == "USER_INPUT":
                 agent_status = "thinking"
                 current_action = "Размышляет..."
@@ -581,22 +591,6 @@ async def get_conversation_chat(conv_id=None, limit=50, port=None):
         }
 
     chat_data = parse_conversation_history(conv_id, limit=limit)
-
-    # Truthful status check via live CDP inspection
-    if target:
-        is_running, _ = await check_agent_active_status_cdp(target=target, port=port)
-        if not is_running:
-            # Absolute physical truth: Stop button does NOT exist in Antigravity UI -> agent is IDLE!
-            chat_data["agent_status"] = "idle"
-            chat_data["current_action"] = ""
-        else:
-            chat_data["agent_status"] = "executing"
-            if not chat_data.get("current_action"):
-                chat_data["current_action"] = "Выполняет задачу..."
-    else:
-        if chat_data["agent_status"] not in ("executing", "thinking"):
-            chat_data["agent_status"] = "idle"
-
     return chat_data
 
 async def attach_file_to_composer(ws, file_path):
