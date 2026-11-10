@@ -552,3 +552,144 @@ def cancel_restart_pc():
     """Aborts a pending system reboot."""
     subprocess.run("shutdown /a", shell=True)
     return {"status": "ok", "message": "Reboot aborted"}
+
+# --- VIRTUAL MOUSE & TOUCHPAD ---
+def mouse_move_relative(dx: int, dy: int):
+    """Moves mouse cursor relatively by dx, dy."""
+    try:
+        user32.mouse_event(0x0001, int(dx), int(dy), 0, 0)
+        return True
+    except Exception as e:
+        logger.error(f"Error moving mouse: {e}")
+        return False
+
+def mouse_click(button: str = "left"):
+    """Performs mouse click: left, right, middle, or double."""
+    try:
+        b = (button or "left").lower()
+        if b == "left":
+            user32.mouse_event(0x0002, 0, 0, 0, 0)
+            user32.mouse_event(0x0004, 0, 0, 0, 0)
+        elif b == "right":
+            user32.mouse_event(0x0008, 0, 0, 0, 0)
+            user32.mouse_event(0x0010, 0, 0, 0, 0)
+        elif b == "middle":
+            user32.mouse_event(0x0020, 0, 0, 0, 0)
+            user32.mouse_event(0x0040, 0, 0, 0, 0)
+        elif b == "double":
+            user32.mouse_event(0x0002, 0, 0, 0, 0)
+            user32.mouse_event(0x0004, 0, 0, 0, 0)
+            time.sleep(0.04)
+            user32.mouse_event(0x0002, 0, 0, 0, 0)
+            user32.mouse_event(0x0004, 0, 0, 0, 0)
+        return True
+    except Exception as e:
+        logger.error(f"Error clicking mouse: {e}")
+        return False
+
+def mouse_scroll(delta: int):
+    """Scrolls mouse wheel by delta (e.g. +120 or -120)."""
+    try:
+        user32.mouse_event(0x0800, 0, 0, int(delta), 0)
+        return True
+    except Exception as e:
+        logger.error(f"Error scrolling mouse: {e}")
+        return False
+
+# --- VIRTUAL UNICODE KEYBOARD TYPING ---
+def type_unicode_text(text: str):
+    """Types arbitrary Unicode text directly into the foreground window."""
+    try:
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [
+                ('wVk', wintypes.WORD),
+                ('wScan', wintypes.WORD),
+                ('dwFlags', wintypes.DWORD),
+                ('time', wintypes.DWORD),
+                ('dwExtraInfo', ctypes.POINTER(ctypes.c_ulong))
+            ]
+
+        class INPUT(ctypes.Structure):
+            class _INPUT(ctypes.Union):
+                _fields_ = [('ki', KEYBDINPUT)]
+            _anonymous_ = ('_input',)
+            _fields_ = [('type', wintypes.DWORD), ('_input', _INPUT)]
+
+        KEYEVENTF_UNICODE = 0x0004
+        KEYEVENTF_KEYUP = 0x0002
+        INPUT_KEYBOARD = 1
+
+        for char in text:
+            code = ord(char)
+            inp_down = INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=0, wScan=code, dwFlags=KEYEVENTF_UNICODE, time=0, dwExtraInfo=None))
+            inp_up = INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=0, wScan=code, dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, time=0, dwExtraInfo=None))
+            user32.SendInput(1, ctypes.byref(inp_down), ctypes.sizeof(INPUT))
+            user32.SendInput(1, ctypes.byref(inp_up), ctypes.sizeof(INPUT))
+            time.sleep(0.004)
+        return True
+    except Exception as e:
+        logger.error(f"Error typing text: {e}")
+        return False
+
+# --- LAPTOP BRIGHTNESS & POWER ---
+def set_display_brightness(level: int):
+    """Sets laptop monitor brightness between 0 and 100."""
+    try:
+        val = max(0, min(100, int(level)))
+        cmd = f"(Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, {val})"
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd], capture_output=True, timeout=3.0)
+        return {"status": "ok", "brightness": val}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def get_display_brightness():
+    """Gets laptop monitor current brightness."""
+    try:
+        cmd = "(Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightness).CurrentBrightness"
+        res = subprocess.check_output(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd], timeout=3.0, text=True)
+        return int(res.strip())
+    except Exception:
+        return None
+
+# --- PROCESS MANAGEMENT ---
+def get_top_processes(limit: int = 10):
+    """Returns top processes sorted by RAM usage."""
+    import psutil
+    procs = []
+    for p in psutil.process_iter(['pid', 'name', 'memory_info', 'cpu_percent']):
+        try:
+            mem_mb = round(p.info['memory_info'].rss / (1024 * 1024), 1)
+            procs.append({
+                "pid": p.info['pid'],
+                "name": p.info['name'],
+                "mem_mb": mem_mb,
+                "cpu": p.info['cpu_percent'] or 0
+            })
+        except Exception:
+            pass
+    procs.sort(key=lambda x: x['mem_mb'], reverse=True)
+    return procs[:limit]
+
+def kill_process_by_pid(pid: int, force: bool = True):
+    """Terminates process by PID."""
+    import psutil
+    try:
+        p = psutil.Process(int(pid))
+        p_name = p.name()
+        if force:
+            p.kill()
+        else:
+            p.terminate()
+        return {"status": "ok", "message": f"Process {p_name} ({pid}) terminated"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def get_system_uptime():
+    """Returns uptime in hours and seconds."""
+    import psutil
+    try:
+        uptime_sec = int(time.time() - psutil.boot_time())
+        hours = round(uptime_sec / 3600, 1)
+        return {"uptime_sec": uptime_sec, "uptime_hours": hours}
+    except Exception:
+        return {"uptime_sec": 0, "uptime_hours": 0}

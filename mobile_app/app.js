@@ -252,7 +252,10 @@ function renderMarkdown(md) {
       <div class="code-block">
         <div class="code-header" style="display: flex; justify-content: space-between; align-items: center; padding: 4px 8px; background: #1c1c1f; border-bottom: 1px solid #27272a; border-radius: 6px 6px 0 0; font-size: 11px; color: #a1a1aa;">
           <span class="code-lang">${escapeHtml(item.lang)}</span>
-          <button class="btn-copy-code" data-code="${encodeURIComponent(item.code)}" style="background: transparent; border: 1px solid #27272a; color: #f4f4f5; font-size: 11px; padding: 2px 6px; border-radius: 4px; cursor: pointer;">Скопировать</button>
+          <div>
+            <button class="btn-send-to-terminal" data-code="${encodeURIComponent(item.code)}" style="background: transparent; border: 1px solid #27272a; color: #34d399; font-size: 11px; padding: 2px 6px; border-radius: 4px; cursor: pointer; margin-right: 6px;">В терминал</button>
+            <button class="btn-copy-code" data-code="${encodeURIComponent(item.code)}" style="background: transparent; border: 1px solid #27272a; color: #f4f4f5; font-size: 11px; padding: 2px 6px; border-radius: 4px; cursor: pointer;">Скопировать</button>
+          </div>
         </div>
         <pre style="margin: 0; padding: 10px; background: #141416; border-radius: 0 0 6px 6px; overflow-x: auto;"><code>${escapedCode}</code></pre>
       </div>
@@ -263,8 +266,26 @@ function renderMarkdown(md) {
   return text;
 }
 
-// Copy Code Handler
+// Copy Code & Send to Terminal Handler
 document.addEventListener("click", (e) => {
+  if (e.target && e.target.classList.contains("btn-send-to-terminal")) {
+    const code = decodeURIComponent(e.target.getAttribute("data-code") || "");
+    if (!code) return;
+    haptic(25);
+    const navBtn = document.querySelector('.nav-item[data-tab="tabControls"]');
+    if (navBtn) navBtn.click();
+    const cmdInput = document.getElementById("cmdInput");
+    if (cmdInput) {
+      cmdInput.value = code.trim();
+      setTimeout(() => {
+        cmdInput.scrollIntoView({ behavior: "smooth", block: "center" });
+        cmdInput.focus();
+      }, 100);
+    }
+    showToast("✓ Вставлено в терминал ноутбука");
+    return;
+  }
+
   if (e.target && e.target.classList.contains("btn-copy-code")) {
     const code = decodeURIComponent(e.target.getAttribute("data-code") || "");
     if (!code) return;
@@ -1650,8 +1671,12 @@ function setupEvents() {
 
       if (targetId === "tabAntigravity") {
         fetchChat(true);
-      } else if (targetId === "tabControls" || targetId === "tabApps") {
+      } else if (targetId === "tabControls") {
         fetchActiveWindows();
+        fetchProcesses();
+      } else if (targetId === "tabApps") {
+        fetchActiveWindows();
+        if (!currentFsPath) loadFsDirectory("");
       } else if (targetId === "tabMonitor") {
         pollTelemetry();
         if (!currentMonitorScreenshot) loadMonitorScreenshot();
@@ -2073,8 +2098,14 @@ function setupEvents() {
     });
   }
 
-  // Remote Terminal Initialization
+  // Remote Terminal & Extended Remote Tools
   initRemoteTerminal();
+  initChatSearch();
+  initTrackpad();
+  initCmdPresets();
+  initProcessManager();
+  initFileExplorer();
+  initBrightnessControls();
 }
 
 // Remote Terminal Execution
@@ -2152,6 +2183,338 @@ function initRemoteTerminal() {
       statusBadge.style.display = "none";
     });
   }
+}
+
+// --- 1. CHAT SEARCH ---
+function initChatSearch() {
+  const btnToggle = document.getElementById("btnToggleChatSearch");
+  const bar = document.getElementById("chatSearchBar");
+  const input = document.getElementById("chatSearchInput");
+  const btnClose = document.getElementById("btnCloseChatSearch");
+
+  if (!btnToggle || !bar || !input) return;
+
+  btnToggle.addEventListener("click", () => {
+    haptic(15);
+    const isOpen = bar.style.display !== "none";
+    bar.style.display = isOpen ? "none" : "flex";
+    if (!isOpen) {
+      input.focus();
+    } else {
+      input.value = "";
+      filterChatMessages("");
+    }
+  });
+
+  if (btnClose) {
+    btnClose.addEventListener("click", () => {
+      bar.style.display = "none";
+      input.value = "";
+      filterChatMessages("");
+    });
+  }
+
+  input.addEventListener("input", () => {
+    filterChatMessages(input.value.trim().toLowerCase());
+  });
+}
+
+function filterChatMessages(query) {
+  const feed = document.getElementById("chatFeed");
+  if (!feed) return;
+  const msgs = feed.querySelectorAll(".chat-msg");
+  msgs.forEach(m => {
+    if (!query) {
+      m.style.display = "";
+      m.style.opacity = "";
+    } else {
+      const txt = m.textContent.toLowerCase();
+      if (txt.includes(query)) {
+        m.style.display = "";
+        m.style.opacity = "1";
+      } else {
+        m.style.opacity = "0.2";
+      }
+    }
+  });
+}
+
+// --- 2. VIRTUAL TRACKPAD & REMOTE TYPING ---
+function initTrackpad() {
+  const surface = document.getElementById("trackpadSurface");
+  const btnLeft = document.getElementById("btnMouseLeft");
+  const btnDouble = document.getElementById("btnMouseDouble");
+  const btnRight = document.getElementById("btnMouseRight");
+  const directInput = document.getElementById("directTypeInput");
+  const btnDirectType = document.getElementById("btnDirectType");
+
+  if (!surface) return;
+
+  let lastX = 0, lastY = 0;
+  let isTouching = false;
+  let moved = false;
+  let throttleTimer = null;
+
+  surface.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 1) {
+      isTouching = true;
+      moved = false;
+      lastX = e.touches[0].clientX;
+      lastY = e.touches[0].clientY;
+      surface.classList.add("active");
+    }
+  }, { passive: false });
+
+  surface.addEventListener("touchmove", (e) => {
+    if (!isTouching || e.touches.length !== 1) return;
+    e.preventDefault();
+    const curX = e.touches[0].clientX;
+    const curY = e.touches[0].clientY;
+    const dx = Math.round((curX - lastX) * 1.8);
+    const dy = Math.round((curY - lastY) * 1.8);
+    lastX = curX;
+    lastY = curY;
+
+    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+      moved = true;
+      if (!throttleTimer) {
+        throttleTimer = setTimeout(() => {
+          throttleTimer = null;
+          apiCall("/api/pc/mouse", "POST", { action: "move", dx, dy }).catch(() => {});
+        }, 25);
+      }
+    }
+  }, { passive: false });
+
+  surface.addEventListener("touchend", () => {
+    surface.classList.remove("active");
+    if (isTouching && !moved) {
+      haptic(20);
+      apiCall("/api/pc/mouse", "POST", { action: "click", button: "left" }).catch(() => {});
+    }
+    isTouching = false;
+  });
+
+  if (btnLeft) {
+    btnLeft.addEventListener("click", () => {
+      haptic(15);
+      apiCall("/api/pc/mouse", "POST", { action: "click", button: "left" }).catch(() => {});
+    });
+  }
+
+  if (btnDouble) {
+    btnDouble.addEventListener("click", () => {
+      haptic(25);
+      apiCall("/api/pc/mouse", "POST", { action: "click", button: "double" }).catch(() => {});
+    });
+  }
+
+  if (btnRight) {
+    btnRight.addEventListener("click", () => {
+      haptic(20);
+      apiCall("/api/pc/mouse", "POST", { action: "click", button: "right" }).catch(() => {});
+    });
+  }
+
+  // Virtual Hotkeys
+  document.querySelectorAll(".vkey-btn[data-key]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      haptic(20);
+      const key = btn.getAttribute("data-key");
+      triggerAction("hotkey", { key, name: key });
+    });
+  });
+
+  // Direct Unicode Typing
+  const sendTypedText = () => {
+    const text = directInput ? directInput.value : "";
+    if (!text) return;
+    haptic(25);
+    apiCall("/api/pc/type", "POST", { text }).then(() => {
+      showToast("✓ Текст напечатан в окно ПК");
+      if (directInput) directInput.value = "";
+    }).catch(e => {
+      showToast("Ошибка ввода: " + e.message);
+    });
+  };
+
+  if (btnDirectType) btnDirectType.addEventListener("click", sendTypedText);
+  if (directInput) {
+    directInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        sendTypedText();
+      }
+    });
+  }
+}
+
+// --- 3. TERMINAL PRESETS ---
+function initCmdPresets() {
+  const chips = document.querySelectorAll(".cmd-preset-chip[data-cmd]");
+  const input = document.getElementById("cmdInput");
+  const btnRun = document.getElementById("btnRunCmd");
+  chips.forEach(chip => {
+    chip.addEventListener("click", () => {
+      haptic(15);
+      if (input) {
+        input.value = chip.getAttribute("data-cmd");
+        if (btnRun) btnRun.click();
+      }
+    });
+  });
+}
+
+// --- 4. PROCESS MANAGER ---
+async function fetchProcesses() {
+  const list = document.getElementById("processList");
+  if (!list) return;
+  try {
+    const res = await apiCall("/api/pc/processes?limit=12");
+    if (!res || !res.processes) {
+      list.innerHTML = `<div class="loading-state-text">Ошибка получения процессов</div>`;
+      return;
+    }
+    list.innerHTML = "";
+    res.processes.forEach(p => {
+      const item = document.createElement("div");
+      item.className = "process-item";
+      item.innerHTML = `
+        <div class="process-info">
+          <span class="process-name">${escapeHtml(p.name)}</span>
+          <span class="process-meta">PID: ${p.pid} • RAM: ${p.mem_mb} МБ • CPU: ${p.cpu}%</span>
+        </div>
+        <button class="btn-kill-proc" data-pid="${p.pid}" type="button">Завершить</button>
+      `;
+      const killBtn = item.querySelector(".btn-kill-proc");
+      killBtn.addEventListener("click", async () => {
+        haptic(30);
+        if (confirm(`Завершить процесс ${p.name} (PID: ${p.pid})?`)) {
+          const kRes = await apiCall("/api/pc/process/kill", "POST", { pid: p.pid });
+          if (kRes && kRes.status === "ok") {
+            showToast(`✓ Процесс ${p.name} завершен`);
+            item.remove();
+          } else {
+            showToast("Ошибка: " + (kRes?.message || "Не удалось завершить"));
+          }
+        }
+      });
+      list.appendChild(item);
+    });
+  } catch (e) {
+    list.innerHTML = `<div class="loading-state-text">Сбой загрузки процессов</div>`;
+  }
+}
+
+function initProcessManager() {
+  const btnRefresh = document.getElementById("btnRefreshProcesses");
+  if (btnRefresh) {
+    btnRefresh.addEventListener("click", () => {
+      haptic(15);
+      fetchProcesses();
+    });
+  }
+}
+
+// --- 5. REMOTE FILE EXPLORER ---
+let currentFsPath = "";
+async function loadFsDirectory(path = "") {
+  const list = document.getElementById("fsFileList");
+  const label = document.getElementById("fsCurrentDirLabel");
+  const btnUp = document.getElementById("btnFsUp");
+  const btnHome = document.getElementById("btnFsHome");
+  if (!list) return;
+
+  list.innerHTML = `<div class="loading-state-text">Загрузка файлов...</div>`;
+  try {
+    const pParam = path ? `?path=${encodeURIComponent(path)}` : "";
+    const res = await apiCall(`/api/fs/list${pParam}`);
+    if (!res || res.status !== "ok") {
+      list.innerHTML = `<div class="loading-state-text">${escapeHtml(res?.message || "Ошибка чтения папки")}</div>`;
+      return;
+    }
+
+    currentFsPath = res.current || "";
+    if (label) label.textContent = res.is_root ? "Корневые папки" : (currentFsPath.split(/[\\\\/]/).pop() || currentFsPath);
+    if (btnUp) {
+      btnUp.style.display = res.is_root ? "none" : "inline-block";
+      btnUp.onclick = () => loadFsDirectory(res.parent);
+    }
+    if (btnHome) {
+      btnHome.className = "fs-crumb-btn" + (res.is_root ? " active" : "");
+    }
+
+    if (res.items.length === 0) {
+      list.innerHTML = `<div class="loading-state-text">Папка пуста</div>`;
+      return;
+    }
+
+    list.innerHTML = "";
+    res.items.forEach(it => {
+      const itemEl = document.createElement("div");
+      itemEl.className = "fs-item";
+      const iconSvg = it.is_dir
+        ? `<svg class="fs-item-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>`
+        : `<svg class="fs-item-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>`;
+      const sizeLabel = it.is_dir ? "Папка" : formatBytes(it.size);
+
+      itemEl.innerHTML = `
+        <div class="fs-item-left">
+          ${iconSvg}
+          <span class="fs-item-name" title="${escapeHtml(it.path)}">${escapeHtml(it.name)}</span>
+        </div>
+        <span class="fs-item-size">${sizeLabel}</span>
+      `;
+
+      itemEl.addEventListener("click", () => {
+        haptic(15);
+        if (it.is_dir) {
+          loadFsDirectory(it.path);
+        } else {
+          window.open(`${config.host}:${config.port}/api/fs/download?path=${encodeURIComponent(it.path)}`, "_blank");
+        }
+      });
+
+      list.appendChild(itemEl);
+    });
+  } catch (e) {
+    list.innerHTML = `<div class="loading-state-text">Сбой чтения: ${e.message}</div>`;
+  }
+}
+
+function formatBytes(bytes) {
+  if (!bytes || bytes === 0) return "0 Б";
+  const k = 1024;
+  const sizes = ["Б", "КБ", "МБ", "ГБ"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
+function initFileExplorer() {
+  const btnHome = document.getElementById("btnFsHome");
+  const btnRefresh = document.getElementById("btnRefreshFs");
+  if (btnHome) btnHome.addEventListener("click", () => loadFsDirectory(""));
+  if (btnRefresh) btnRefresh.addEventListener("click", () => loadFsDirectory(currentFsPath));
+}
+
+// --- 6. LAPTOP BRIGHTNESS ---
+function initBrightnessControls() {
+  const label = document.getElementById("brightnessLabel");
+  document.querySelectorAll(".btn-brightness-step[data-level]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      haptic(20);
+      const level = parseInt(btn.getAttribute("data-level"), 10);
+      try {
+        const res = await apiCall("/api/pc/brightness", "POST", { level });
+        if (res && res.status === "ok") {
+          showToast(`✓ Яркость экрана: ${level}%`);
+          if (label) label.textContent = `${level}%`;
+        }
+      } catch (e) {
+        showToast("Ошибка изменения яркости: " + e.message);
+      }
+    });
+  });
 }
 
 // Initializer

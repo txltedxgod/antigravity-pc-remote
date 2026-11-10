@@ -27,6 +27,7 @@ if sys.stdout.encoding != 'utf-8':
 import win32_controls
 import antigravity_bridge
 import tunnel_manager
+import battery_guard
 
 log_file = SERVER_DIR / "server.log"
 logging.basicConfig(
@@ -126,6 +127,8 @@ async def handle_pc_status(request):
         "cpu_pct": cpu,
         "memory": mem,
         "battery": battery_info,
+        "uptime": win32_controls.get_system_uptime(),
+        "brightness": win32_controls.get_display_brightness(),
         "active_window": win_title,
         "steamghost_running": steamghost_running,
         "lan_ip": get_lan_ip(),
@@ -269,6 +272,162 @@ async def handle_pc_cmd(request):
 async def handle_pc_windows(request):
     windows = win32_controls.get_active_windows()
     return json_response({"status": "ok", "windows": windows, "count": len(windows)})
+
+async def handle_pc_mouse(request):
+    """Handles virtual mouse movements, clicks, and scroll."""
+    try:
+        body = await request.json()
+    except Exception:
+        return json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+
+    act = body.get("action", "move")
+    if act == "move":
+        dx = int(body.get("dx", 0))
+        dy = int(body.get("dy", 0))
+        win32_controls.mouse_move_relative(dx, dy)
+    elif act == "click":
+        btn = body.get("button", "left")
+        win32_controls.mouse_click(btn)
+    elif act == "scroll":
+        delta = int(body.get("delta", 0))
+        win32_controls.mouse_scroll(delta)
+    return json_response({"status": "ok", "action": act})
+
+async def handle_pc_type(request):
+    """Types arbitrary text directly into the foreground window."""
+    try:
+        body = await request.json()
+    except Exception:
+        return json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+
+    text = body.get("text", "")
+    if text:
+        win32_controls.type_unicode_text(text)
+    return json_response({"status": "ok", "length": len(text)})
+
+async def handle_get_brightness(request):
+    """Gets current monitor brightness."""
+    b = win32_controls.get_display_brightness()
+    return json_response({"status": "ok", "brightness": b})
+
+async def handle_set_brightness(request):
+    """Sets monitor brightness."""
+    try:
+        body = await request.json()
+    except Exception:
+        return json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+    level = int(body.get("level", 50))
+    res = win32_controls.set_display_brightness(level)
+    return json_response(res)
+
+async def handle_pc_processes(request):
+    """Lists top memory/CPU processes."""
+    try:
+        limit = int(request.query.get("limit", 15))
+    except Exception:
+        limit = 15
+    procs = win32_controls.get_top_processes(limit=limit)
+    return json_response({"status": "ok", "processes": procs})
+
+async def handle_pc_kill_process(request):
+    """Kills a process by PID."""
+    try:
+        body = await request.json()
+    except Exception:
+        return json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+    pid = body.get("pid")
+    if not pid:
+        return json_response({"status": "error", "message": "PID is required"}, status=400)
+    res = win32_controls.kill_process_by_pid(int(pid))
+    return json_response(res)
+
+ALLOWED_FS_ROOTS = {
+    "Desktop": Path.home() / "Desktop",
+    "Downloads": Path.home() / "Downloads",
+    "Documents": Path.home() / "Documents",
+    "Scratch Projects": Path.home() / ".gemini" / "antigravity" / "scratch",
+    "PC Remote App": Path.home() / ".gemini" / "antigravity" / "scratch" / "pc_remote"
+}
+
+async def handle_fs_list(request):
+    """Lists directory contents or predefined root folders."""
+    req_path = request.query.get("path", "").strip()
+    if not req_path:
+        roots = []
+        for name, p in ALLOWED_FS_ROOTS.items():
+            if p.exists():
+                roots.append({
+                    "name": name,
+                    "path": str(p),
+                    "is_dir": True,
+                    "size": 0,
+                    "mtime": int(p.stat().st_mtime)
+                })
+        return json_response({"status": "ok", "current": "", "is_root": True, "items": roots})
+
+    target_path = Path(req_path)
+    if not target_path.exists():
+        return json_response({"status": "error", "message": "Path not found"}, status=404)
+
+    if not target_path.is_dir():
+        return json_response({"status": "error", "message": "Path is not a directory"}, status=400)
+
+    items = []
+    try:
+        for entry in target_path.iterdir():
+            try:
+                is_dir = entry.is_dir()
+                stat = entry.stat()
+                items.append({
+                    "name": entry.name,
+                    "path": str(entry),
+                    "is_dir": is_dir,
+                    "size": stat.st_size if not is_dir else 0,
+                    "mtime": int(stat.st_mtime)
+                })
+            except Exception:
+                continue
+        items.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+        parent = str(target_path.parent) if target_path.parent != target_path else ""
+        return json_response({
+            "status": "ok",
+            "current": str(target_path),
+            "parent": parent,
+            "is_root": False,
+            "items": items[:200]
+        })
+    except Exception as e:
+        return json_response({"status": "error", "message": str(e)}, status=500)
+
+async def handle_fs_download(request):
+    """Downloads a file from the host PC."""
+    req_path = request.query.get("path", "").strip()
+    if not req_path:
+        return web.Response(text="Path is required", status=400)
+    target_path = Path(req_path)
+    if not target_path.exists() or not target_path.is_file():
+        return web.Response(text="File not found", status=404)
+    return web.FileResponse(
+        target_path,
+        headers={
+            "Content-Disposition": f'attachment; filename="{target_path.name}"'
+        }
+    )
+
+async def handle_fs_read(request):
+    """Reads preview content of a text or code file."""
+    req_path = request.query.get("path", "").strip()
+    if not req_path:
+        return json_response({"status": "error", "message": "Path is required"}, status=400)
+    target_path = Path(req_path)
+    if not target_path.exists() or not target_path.is_file():
+        return json_response({"status": "error", "message": "File not found"}, status=404)
+    try:
+        with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read(50000)
+        return json_response({"status": "ok", "name": target_path.name, "path": str(target_path), "content": content})
+    except Exception as e:
+        return json_response({"status": "error", "message": str(e)}, status=500)
 
 async def handle_get_clipboard(request):
     text = win32_controls.get_clipboard_text()
@@ -430,6 +589,15 @@ def create_app():
     app.router.add_get("/api/pc/windows", handle_pc_windows)
     app.router.add_post("/api/pc/action", handle_pc_action)
     app.router.add_post("/api/pc/cmd", handle_pc_cmd)
+    app.router.add_post("/api/pc/mouse", handle_pc_mouse)
+    app.router.add_post("/api/pc/type", handle_pc_type)
+    app.router.add_get("/api/pc/brightness", handle_get_brightness)
+    app.router.add_post("/api/pc/brightness", handle_set_brightness)
+    app.router.add_get("/api/pc/processes", handle_pc_processes)
+    app.router.add_post("/api/pc/process/kill", handle_pc_kill_process)
+    app.router.add_get("/api/fs/list", handle_fs_list)
+    app.router.add_get("/api/fs/download", handle_fs_download)
+    app.router.add_get("/api/fs/read", handle_fs_read)
     app.router.add_get("/api/clipboard", handle_get_clipboard)
     app.router.add_post("/api/clipboard", handle_set_clipboard)
     app.router.add_get("/api/antigravity/status", handle_antigravity_status)
@@ -468,6 +636,9 @@ def run_server(port=8765):
 
     # Start Cloudflare Tunnel for worldwide access
     tunnel_manager.start_tunnel(port)
+
+    # Start Battery Guard for laptop power monitoring
+    battery_guard.start_battery_guard()
 
     web.run_app(app, host="0.0.0.0", port=port, print=None)
 

@@ -86,6 +86,12 @@
             <span class="pill-dot" id="agentStatusDot"></span>
             <span class="pill-label" id="agentStatusLabel">Действие...</span>
           </div>
+          <button class="btn-icon-square" id="btnToggleChatSearch" title="Поиск в переписке">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+          </button>
           <button class="btn-icon-square" id="btnNewChat" title="Создать новый диалог">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
               <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -93,6 +99,12 @@
             </svg>
           </button>
         </div>
+      </div>
+
+      <!-- In-chat search bar (collapsible) -->
+      <div class="chat-search-bar" id="chatSearchBar" style="display: none;">
+        <input type="text" id="chatSearchInput" class="custom-input" placeholder="🔍 Найти в текущем диалоге..." />
+        <button class="btn-micro" id="btnCloseChatSearch" type="button">✕</button>
       </div>
 
       <!-- Real-time Chat Feed -->
@@ -125,6 +137,22 @@
       <div class="chat-input-dock">
         <!-- Quick Chips Carousel (Clean monochrome with SVG icons) -->
         <div class="chips-carousel">
+          <button class="chip" data-prompt="Продолжай выполнение задачи">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+            <span>⚡ Продолжай</span>
+          </button>
+          <button class="chip" data-prompt="Запусти автоматические тесты и проверь результат">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+            <span>🧪 Тесты</span>
+          </button>
+          <button class="chip" data-prompt="Сделай git commit и запушь в origin main">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"></circle><line x1="1.05" y1="12" x2="7" y2="12"></line><line x1="17.01" y1="12" x2="22.96" y2="12"></line></svg>
+            <span>💾 Git commit</span>
+          </button>
+          <button class="chip" data-prompt="Исправь найденную ошибку и протестируй">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
+            <span>🛠️ Исправь ошибку</span>
+          </button>
           <button class="chip" data-prompt="Каков текущий статус задач?">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
             <span>Статус задач</span>
@@ -347,6 +375,62 @@
         </div>
       </div>
 
+      <!-- Virtual Mouse Trackpad & Keyboard Input Deck -->
+      <div class="monochrome-card">
+        <div class="card-title-row space-between">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div class="card-title-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="5" y="2" width="14" height="20" rx="7"></rect>
+                <line x1="12" y1="6" x2="12" y2="10"></line>
+              </svg>
+            </div>
+            <span class="card-heading">Виртуальный тачпад и мышь ПК</span>
+          </div>
+          <span class="chip-label" id="trackpadStatus">Веди пальцем</span>
+        </div>
+
+        <div class="trackpad-surface" id="trackpadSurface">
+          <div class="trackpad-hint">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#71717A" stroke-width="1.8">
+              <path d="M12 2v20M2 12h20"></path>
+            </svg>
+            <span>Веди пальцем для перемещения курсора мыши</span>
+          </div>
+        </div>
+
+        <div class="btn-grid-3" style="margin-top: 8px;">
+          <button class="tactile-btn" id="btnMouseLeft" type="button">
+            <span>Левый клик</span>
+          </button>
+          <button class="tactile-btn" id="btnMouseDouble" type="button">
+            <span>2x Клик</span>
+          </button>
+          <button class="tactile-btn" id="btnMouseRight" type="button">
+            <span>Правый клик</span>
+          </button>
+        </div>
+
+        <!-- Quick Virtual Hotkeys Row -->
+        <div class="virtual-keys-row" style="margin-top: 8px;">
+          <button class="vkey-btn" data-key="win">Win</button>
+          <button class="vkey-btn" data-key="esc">Esc</button>
+          <button class="vkey-btn" data-key="enter">Enter</button>
+          <button class="vkey-btn" data-key="backspace">⌫ Del</button>
+          <button class="vkey-btn" data-key="alt_tab">Alt+Tab</button>
+          <button class="vkey-btn" data-key="ctrl_c">Ctrl+C</button>
+          <button class="vkey-btn" data-key="ctrl_v">Ctrl+V</button>
+        </div>
+
+        <!-- Direct Remote Typing Input -->
+        <div class="search-input-row" style="margin-top: 8px;">
+          <input type="text" id="directTypeInput" class="custom-input" placeholder="Напечатать текст в активное окно..." />
+          <button class="btn btn-primary-compact" id="btnDirectType" type="button">
+            <span>Ввод</span>
+          </button>
+        </div>
+      </div>
+
       <!-- Remote Terminal / PowerShell Command Card -->
       <div class="monochrome-card">
         <div class="card-title-row space-between">
@@ -361,6 +445,17 @@
           </div>
           <span class="chip-label" id="cmdStatusBadge" style="display: none;">Выполняется...</span>
         </div>
+
+        <!-- Quick Terminal Presets -->
+        <div class="cmd-presets-row" style="margin-bottom: 8px;">
+          <button class="cmd-preset-chip" data-cmd="ipconfig">ipconfig</button>
+          <button class="cmd-preset-chip" data-cmd="Get-Process | Sort-Object -Descending WS | Select-Object -First 10">top-ram</button>
+          <button class="cmd-preset-chip" data-cmd="netstat -ano | findstr LISTENING">ports</button>
+          <button class="cmd-preset-chip" data-cmd="shutdown /a">shutdown /a</button>
+          <button class="cmd-preset-chip" data-cmd="powercfg /requests">powercfg</button>
+          <button class="cmd-preset-chip" data-cmd="git status">git status</button>
+        </div>
+
         <div class="search-input-row" style="margin-bottom: 8px;">
           <input type="text" id="cmdInput" class="custom-input mono-font" placeholder="Команда: ipconfig, get-process, tasklist..." />
           <button class="btn btn-primary-compact" id="btnRunCmd" type="button">
@@ -376,6 +471,29 @@
             </div>
           </div>
           <pre class="cmd-console-output" id="cmdOutput"></pre>
+        </div>
+      </div>
+
+      <!-- Process Manager (Top Processes & 1-Tap Kill) Card -->
+      <div class="monochrome-card">
+        <div class="card-title-row space-between">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div class="card-title-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+              </svg>
+            </div>
+            <span class="card-heading">Диспетчер процессов (Топ по RAM)</span>
+          </div>
+          <button class="chip-action" id="btnRefreshProcesses" title="Обновить процессы">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+            <span>Обновить</span>
+          </button>
+        </div>
+        <div class="process-list" id="processList">
+          <div class="loading-state-text">Загрузка процессов...</div>
         </div>
       </div>
 
@@ -659,6 +777,36 @@
           </button>
         </div>
       </div>
+
+      <!-- Remote File Explorer Card -->
+      <div class="monochrome-card">
+        <div class="card-title-row space-between">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div class="card-title-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+              </svg>
+            </div>
+            <span class="card-heading">Файловый менеджер ноутбука</span>
+          </div>
+          <span class="chip-label" id="fsCurrentDirLabel">Папки ПК</span>
+        </div>
+
+        <div class="fs-breadcrumbs" id="fsBreadcrumbs">
+          <button class="fs-crumb-btn active" id="btnFsHome" type="button">🏠 Корневые папки</button>
+          <button class="fs-crumb-btn" id="btnFsUp" style="display: none;" type="button">⬆ Наверх</button>
+          <button class="chip-action" id="btnRefreshFs" style="margin-left: auto;" type="button">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+            <span>Обновить</span>
+          </button>
+        </div>
+
+        <div class="fs-file-list" id="fsFileList">
+          <div class="loading-state-text">Загрузка папок...</div>
+        </div>
+      </div>
     </section>
 
     <!-- TAB 4: PC Monitor & Telemetry -->
@@ -801,6 +949,41 @@
         <div class="clipboard-input-row">
           <input type="text" id="clipInput" class="custom-input" placeholder="Текст для буфера ПК...">
           <button class="btn btn-primary-compact" id="btnSendClip">Отправить</button>
+        </div>
+      </div>
+
+      <!-- Laptop Screen Brightness Card -->
+      <div class="monochrome-card">
+        <div class="card-title-row space-between">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div class="card-title-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="5"></circle>
+                <line x1="12" y1="1" x2="12" y2="3"></line>
+                <line x1="12" y1="21" x2="12" y2="23"></line>
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                <line x1="1" y1="12" x2="3" y2="12"></line>
+                <line x1="21" y1="12" x2="23" y2="12"></line>
+              </svg>
+            </div>
+            <span class="card-heading">Яркость экрана ноутбука</span>
+          </div>
+          <span class="chip-label" id="brightnessLabel">90%</span>
+        </div>
+        <div class="btn-grid-4">
+          <button class="tactile-btn btn-brightness-step" data-level="0" type="button">
+            <span>0% (Эко)</span>
+          </button>
+          <button class="tactile-btn btn-brightness-step" data-level="30" type="button">
+            <span>30%</span>
+          </button>
+          <button class="tactile-btn btn-brightness-step" data-level="60" type="button">
+            <span>60%</span>
+          </button>
+          <button class="tactile-btn btn-brightness-step" data-level="100" type="button">
+            <span>100%</span>
+          </button>
         </div>
       </div>
     </section>
