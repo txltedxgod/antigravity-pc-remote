@@ -2383,31 +2383,36 @@ html, body {
 .macro-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 9px;
+  gap: 5px;
+  padding: 5px 10px;
   background: #18181B;
   border: 1px solid #27272A;
   border-radius: 9999px;
   color: #E4E4E7;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
   transition: all 0.15s ease;
+  user-select: none;
 }
 .macro-chip:hover {
   background: #27272A;
   border-color: #3F3F46;
 }
 .macro-chip-del {
-  margin-left: 3px;
-  font-size: 10px;
+  margin-left: 5px;
+  font-size: 11px;
   color: #71717A;
   cursor: pointer;
-  padding: 0 2px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+  line-height: 1;
 }
 .macro-chip-del:hover {
-  color: #EF4444;
+  color: #FAFAFA;
+  background: rgba(239, 68, 68, 0.25);
 }
 .btn-add-macro {
   display: inline-flex;
