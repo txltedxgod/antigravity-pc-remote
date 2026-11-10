@@ -305,13 +305,23 @@ def get_google_oauth_url(redirect_uri: str = "http://127.0.0.1:8765/api/antigrav
     }
     return f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
 
+def extract_code_from_string(text: str) -> str:
+    """Extracts raw OAuth authorization code from strings, full URLs, or query params."""
+    text = (text or "").strip()
+    if "code=" in text:
+        m = re.search(r'code=([^& ]+)', text)
+        if m:
+            return urllib.parse.unquote(m.group(1))
+    return text
+
 def exchange_auth_code_for_account(code: str, redirect_uri: str = "http://127.0.0.1:8765/api/antigravity/auth/callback"):
     """Exchanges authorization code for Google tokens and saves as active account."""
+    clean_code = extract_code_from_string(code)
     post_data = urllib.parse.urlencode({
         "client_id": GOOGLE_CLIENT_ID,
         "client_secret": GOOGLE_CLIENT_SECRET,
         "grant_type": "authorization_code",
-        "code": code,
+        "code": clean_code,
         "redirect_uri": redirect_uri
     }).encode("utf-8")
 
@@ -329,6 +339,12 @@ def exchange_auth_code_for_account(code: str, redirect_uri: str = "http://127.0.
     access_token = token_res.get("access_token")
     if not access_token:
         return {"status": "error", "message": "Google did not return access_token"}
+
+    # Ensure ISO expiry string exists for Antigravity's Go runtime
+    if "expiry" not in token_res:
+        from datetime import datetime, timezone, timedelta
+        exp = datetime.now(timezone.utc) + timedelta(seconds=token_res.get("expires_in", 3600))
+        token_res["expiry"] = exp.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
     # Fetch user email from Google UserInfo
     email = "google_user@gmail.com"
@@ -363,3 +379,10 @@ def exchange_auth_code_for_account(code: str, redirect_uri: str = "http://127.0.
         "email": email,
         "message": f"Аккаунт {email} успешно подключен и активирован в Antigravity!"
     }
+
+def open_oauth_on_pc(redirect_uri: str = "http://127.0.0.1:8765/api/antigravity/auth/callback"):
+    """Opens Google OAuth sign-in directly in the default browser on the PC."""
+    url = get_google_oauth_url(redirect_uri)
+    import webbrowser
+    webbrowser.open(url)
+    return {"status": "ok", "url": url}

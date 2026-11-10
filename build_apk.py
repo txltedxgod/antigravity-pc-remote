@@ -322,6 +322,20 @@ public class MainActivity extends Activity {{
         }}
 
         @JavascriptInterface
+        public void openInExternalBrowser(final String url) {{
+            runOnUiThread(new Runnable() {{
+                @Override
+                public void run() {{
+                    try {{
+                        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        context.startActivity(intent);
+                    }} catch (Exception ignored) {{}}
+                }}
+            }});
+        }}
+
+        @JavascriptInterface
         public boolean sendWakeOnLan(final String macStr) {{
             try {{
                 String cleanMac = (macStr == null ? "A83B7676208F" : macStr).replaceAll("[^0-9A-Fa-f]", "");
@@ -478,8 +492,18 @@ public class MainActivity extends Activity {{
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {{
                 Uri uri = request.getUrl();
-                if (APP_HOST.equalsIgnoreCase(uri.getHost())) {{
-                    return false;
+                if (uri != null) {{
+                    String host = uri.getHost();
+                    if (host != null && !APP_HOST.equalsIgnoreCase(host)) {{
+                        try {{
+                            Intent intent = new Intent(Intent.ACTION_VIEW, uri);
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            startActivity(intent);
+                            return true;
+                        }} catch (Exception ignored) {{
+                            return false;
+                        }}
+                    }}
                 }}
                 return false;
             }}
@@ -487,6 +511,57 @@ public class MainActivity extends Activity {{
 
         setContentView(webView);
         webView.loadUrl(APP_URL);
+
+        // Background loopback OAuth callback interceptor on phone port 8765
+        new Thread(new Runnable() {{
+            @Override
+            public void run() {{
+                try {{
+                    java.net.ServerSocket serverSocket = new java.net.ServerSocket(8765, 5, java.net.InetAddress.getByName("127.0.0.1"));
+                    while (!isDestroyed()) {{
+                        java.net.Socket socket = serverSocket.accept();
+                        try {{
+                            java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(socket.getInputStream()));
+                            String line = reader.readLine();
+                            if (line != null && line.contains("/api/antigravity/auth/callback")) {{
+                                String code = null;
+                                int codeIdx = line.indexOf("code=");
+                                if (codeIdx != -1) {{
+                                    int endIdx = line.indexOf(" ", codeIdx);
+                                    if (endIdx == -1) endIdx = line.length();
+                                    int ampIdx = line.indexOf("&", codeIdx);
+                                    if (ampIdx != -1 && ampIdx < endIdx) endIdx = ampIdx;
+                                    code = line.substring(codeIdx + 5, endIdx);
+                                }}
+                                String html = "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Авторизовано</title><style>body{{background:#09090B;color:#FAFAFA;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;padding:20px;}}.card{{background:#18181B;border:1px solid #27272A;border-radius:16px;padding:32px 24px;max-width:380px;}}h1{{color:#10B981;font-size:20px;margin:12px 0 8px;}}p{{color:#A1A1AA;font-size:14px;line-height:1.5;}}</style></head><body><div class='card'><div style='font-size:48px'>🎉</div><h1>Аккаунт подключен!</h1><p>Авторизация успешно передана в приложение PC Remote и Antigravity. Можете закрыть эту вкладку и вернуться в приложение.</p></div></body></html>";
+                                byte[] b = html.getBytes("UTF-8");
+                                java.io.OutputStream out = socket.getOutputStream();
+                                out.write(("HTTP/1.1 200 OK\\r\\nContent-Type: text/html; charset=utf-8\\r\\nContent-Length: " + b.length + "\\r\\nConnection: close\\r\\n\\r\\n").getBytes("UTF-8"));
+                                out.write(b);
+                                out.flush();
+                                socket.close();
+
+                                if (code != null) {{
+                                    final String finalCode = java.net.URLDecoder.decode(code, "UTF-8");
+                                    runOnUiThread(new Runnable() {{
+                                        @Override
+                                        public void run() {{
+                                            if (webView != null) {{
+                                                webView.evaluateJavascript("if (typeof handleOAuthCodeReceived === 'function') handleOAuthCodeReceived('" + finalCode + "');", null);
+                                            }}
+                                        }}
+                                    }});
+                                }}
+                            }} else {{
+                                socket.close();
+                            }}
+                        }} catch (Exception ignored) {{
+                            try {{ socket.close(); }} catch (Exception ignore2) {{}}
+                        }}
+                    }}
+                }} catch (Exception ignored) {{}}
+            }}
+        }}).start();
     }}
 
     private String getMimeType(String path) {{

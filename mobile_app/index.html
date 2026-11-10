@@ -203,6 +203,80 @@
 
     <!-- TAB 2: PC Controls -->
     <section class="tab-pane" id="tabControls">
+      <!-- Antigravity Live Plan & Quotas Card -->
+      <div class="monochrome-card" id="quotaPlanCard">
+        <div class="card-title-row space-between">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div class="card-title-icon" style="color: #F59E0B;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+              </svg>
+            </div>
+            <span class="card-heading">План и Лимиты Antigravity</span>
+          </div>
+          <button class="chip-action" id="btnRefreshQuota" type="button" title="Обновить квоты">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+            <span>Обновить</span>
+          </button>
+        </div>
+
+        <!-- Plan Header Badge -->
+        <div class="plan-header-box" id="planHeaderBox" style="margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; background: rgba(255,255,255,0.03); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-subtle);">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span class="plan-crown-badge" id="planCrownBadge">👑 Google AI Pro</span>
+            <span class="plan-user-email" id="planUserEmail" style="font-size: 12px; color: var(--text-muted);">seidoutakidzava@gmail.com</span>
+          </div>
+          <div class="plan-credits-pill" id="planCreditsPill">⚡ 0 AI Credits</div>
+        </div>
+
+        <!-- Quota Progress Bars Grid -->
+        <div class="quota-bars-list" style="display: flex; flex-direction: column; gap: 10px;">
+          <!-- Gemini 5-Hour Limit -->
+          <div class="quota-item">
+            <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px;">
+              <span style="font-weight: 600; color: #FAFAFA;">Gemini · 5-часовой лимит</span>
+              <span id="quotaGemini5hPercent" style="font-weight: 700; color: #10B981;">79% остаток</span>
+            </div>
+            <div class="quota-progress-track">
+              <div class="quota-progress-bar" id="quotaGemini5hBar" style="width: 79%; background: #10B981;"></div>
+            </div>
+            <div style="font-size: 11px; color: var(--text-muted); margin-top: 3px;" id="quotaGemini5hReset">
+              Полный сброс через ~4 ч 20 мин
+            </div>
+          </div>
+
+          <!-- Gemini Weekly Limit -->
+          <div class="quota-item">
+            <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px;">
+              <span style="font-weight: 600; color: #FAFAFA;">Gemini · Недельный лимит</span>
+              <span id="quotaGeminiWeeklyPercent" style="font-weight: 700; color: #EF4444;">17% остаток</span>
+            </div>
+            <div class="quota-progress-track">
+              <div class="quota-progress-bar" id="quotaGeminiWeeklyBar" style="width: 17%; background: #EF4444;"></div>
+            </div>
+            <div style="font-size: 11px; color: var(--text-muted); margin-top: 3px;" id="quotaGeminiWeeklyReset">
+              Полный сброс через ~4 дня
+            </div>
+          </div>
+
+          <!-- Claude & GPT -->
+          <div class="quota-item">
+            <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px;">
+              <span style="font-weight: 600; color: #FAFAFA;">Claude & GPT · Квоты</span>
+              <span id="quotaClaudePercent" style="font-weight: 700; color: #10B981;">100% (5h & 7d)</span>
+            </div>
+            <div class="quota-progress-track">
+              <div class="quota-progress-bar" id="quotaClaudeBar" style="width: 100%; background: #10B981;"></div>
+            </div>
+            <div style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">
+              Свободно (полный доступ)
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Antigravity Accounts & Quota Vault Card -->
       <div class="monochrome-card">
         <div class="card-title-row space-between">
@@ -234,9 +308,13 @@
 
         <!-- Action Buttons -->
         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-          <button class="btn btn-primary" id="btnAddGoogleAccount" type="button" style="flex: 1; min-width: 160px; font-size: 13px;">
+          <button class="btn btn-primary" id="btnAddGoogleAccount" type="button" style="flex: 1; min-width: 140px; font-size: 13px;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
             <span>+ Войти в Google</span>
+          </button>
+          <button class="btn btn-secondary" id="btnOpenGoogleOnPc" type="button" style="font-size: 13px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+            <span>💻 Вход на ПК</span>
           </button>
           <button class="btn btn-secondary" id="btnRestartAntigravity" type="button" style="font-size: 13px;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>

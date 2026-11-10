@@ -1243,3 +1243,151 @@ def get_pc_telemetry():
         "gpu": gpu_info,
         "battery": battery_info
     }
+
+# --- ANTIGRAVITY QUOTA & SUBSCRIPTION PLAN EXTRACTION ---
+_quota_cache = None
+_quota_cache_time = 0
+
+def parse_antigravity_quota_text(raw_text):
+    data = {
+        "status": "ok",
+        "plan": "Google AI Pro",
+        "user_name": "",
+        "user_email": "",
+        "credits": 0,
+        "gemini": {
+            "weekly_percent": 100,
+            "weekly_desc": "",
+            "five_hour_percent": 100,
+            "five_hour_desc": ""
+        },
+        "claude_gpt": {
+            "weekly_percent": 100,
+            "five_hour_percent": 100
+        },
+        "timestamp": int(time.time())
+    }
+
+    # Plan
+    m_plan = re.search(r'Your Plan:\s*([^\n\r]+)', raw_text, re.IGNORECASE)
+    if m_plan:
+        plan_line = m_plan.group(1).strip()
+        plan_line = re.split(r'You can upgrade|Upgrade', plan_line)[0].strip()
+        data["plan"] = plan_line or "Google AI Pro"
+
+    # User & email
+    lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+    for idx, l in enumerate(lines):
+        if '@' in l and '.' in l and idx > 0:
+            data["user_email"] = l
+            data["user_name"] = lines[idx - 1]
+            break
+
+    # Credits
+    m_credits = re.search(r'Available AI Credits:\s*(\d+)', raw_text, re.IGNORECASE)
+    if m_credits:
+        data["credits"] = int(m_credits.group(1))
+
+    # Gemini Models section
+    gemini_part = ""
+    if "Gemini Models" in raw_text:
+        gemini_part = raw_text.split("Gemini Models", 1)[1]
+        if "Claude and GPT" in gemini_part:
+            gemini_part = gemini_part.split("Claude and GPT", 1)[0]
+
+    m_gw = re.search(r'Weekly Limit Remaining\s*(?:[^\n\r%]*\n)?\s*(\d+)%', gemini_part, re.IGNORECASE)
+    if m_gw:
+        data["gemini"]["weekly_percent"] = int(m_gw.group(1))
+    m_gw_refresh = re.search(r'refresh in ([^\n\r.]+)', gemini_part, re.IGNORECASE)
+    if m_gw_refresh:
+        data["gemini"]["weekly_desc"] = f"Обновление через {m_gw_refresh.group(1).strip()}"
+
+    m_g5 = re.search(r'Five Hour Limit Remaining\s*(?:[^\n\r%]*\n)?\s*(\d+)%', gemini_part, re.IGNORECASE)
+    if m_g5:
+        data["gemini"]["five_hour_percent"] = int(m_g5.group(1))
+    all_refreshes = re.findall(r'refresh in ([^\n\r.]+)', gemini_part, re.IGNORECASE)
+    if len(all_refreshes) > 1:
+        data["gemini"]["five_hour_desc"] = f"Обновление через {all_refreshes[1].strip()}"
+
+    # Claude & GPT section
+    if "Claude and GPT" in raw_text:
+        cg_part = raw_text.split("Claude and GPT", 1)[1]
+        m_cw = re.search(r'Weekly Limit Remaining\s*(?:[^\n\r%]*\n)?\s*(\d+)%', cg_part, re.IGNORECASE)
+        if m_cw:
+            data["claude_gpt"]["weekly_percent"] = int(m_cw.group(1))
+        m_c5 = re.search(r'Five Hour Limit Remaining\s*(?:[^\n\r%]*\n)?\s*(\d+)%', cg_part, re.IGNORECASE)
+        if m_c5:
+            data["claude_gpt"]["five_hour_percent"] = int(m_c5.group(1))
+
+    return data
+
+async def get_antigravity_quota_and_plan(port=None, force=False, force_refresh=False):
+    """
+    Fetches Antigravity's current Plan (e.g. Google AI Pro) and real-time model quotas
+    (Gemini 5-hour limit, weekly limit, Claude/GPT limits, credits) via CDP.
+    """
+    global _quota_cache, _quota_cache_time
+    force = force or force_refresh
+    now = time.time()
+    if not force and _quota_cache and (now - _quota_cache_time < 25):
+        return _quota_cache
+
+    target = await find_antigravity_target(port)
+    if not target or not target.get("webSocketDebuggerUrl"):
+        if _quota_cache:
+            return _quota_cache
+        return {"status": "error", "message": "Antigravity DevTools not reachable"}
+
+    ws_url = target["webSocketDebuggerUrl"]
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=8)) as ws:
+                script = """(async () => {
+                    let wasOpen = !!document.querySelector('[role="dialog"]');
+                    if (!wasOpen) {
+                        const settingsBtn = Array.from(document.querySelectorAll('button')).find(b => b.innerText && b.innerText.trim() === 'Settings');
+                        if (!settingsBtn) return { error: 'Settings button not found' };
+                        settingsBtn.click();
+                        await new Promise(r => setTimeout(r, 200));
+                    }
+                    
+                    const dialog = document.querySelector('[role="dialog"]');
+                    if (!dialog) return { error: 'Settings dialog did not open' };
+                    
+                    const modelsBtn = Array.from(dialog.querySelectorAll('button')).find(b => b.innerText && b.innerText.trim() === 'Models');
+                    if (modelsBtn) {
+                        modelsBtn.click();
+                        await new Promise(r => setTimeout(r, 200));
+                    }
+                    
+                    const dialogText = dialog.innerText || '';
+                    
+                    if (!wasOpen) {
+                        const closeBtn = dialog.querySelector('button.agy-button-icon-lg, button[aria-label="Close"]');
+                        if (closeBtn) closeBtn.click();
+                        else {
+                            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+                        }
+                    }
+                    
+                    return { ok: true, raw: dialogText };
+                })()"""
+                msg = {'id': 99, 'method': 'Runtime.evaluate', 'params': {'expression': script, 'awaitPromise': True, 'returnByValue': True}}
+                await ws.send_str(json.dumps(msg))
+                resp = json.loads(await ws.receive_str())
+                data = resp.get('result', {}).get('result', {}).get('value', {})
+                raw_text = data.get('raw', '')
+                if not raw_text:
+                    if _quota_cache:
+                        return _quota_cache
+                    return {"status": "error", "message": data.get("error", "No quota text found")}
+
+                parsed = parse_antigravity_quota_text(raw_text)
+                _quota_cache = parsed
+                _quota_cache_time = now
+                return parsed
+    except Exception as e:
+        logger.warning(f"Error fetching quota via CDP: {e}")
+        if _quota_cache:
+            return _quota_cache
+        return {"status": "error", "message": str(e)}

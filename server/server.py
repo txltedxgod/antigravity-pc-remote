@@ -738,6 +738,21 @@ async def handle_antigravity_submit_code(request):
     res = account_manager.exchange_auth_code_for_account(code, redirect_uri)
     return json_response(res)
 
+async def handle_antigravity_quota(request):
+    """Returns current Antigravity plan (e.g. Google AI Pro) and real-time model limits."""
+    force = (request.query.get("force", "").lower() in ("1", "true")) or (request.query.get("refresh", "").lower() in ("1", "true"))
+    res = await antigravity_bridge.get_antigravity_quota_and_plan(force=force)
+    if isinstance(res, dict):
+        response_data = dict(res)
+        response_data["quota"] = dict(res)
+        return json_response(response_data)
+    return json_response(res)
+
+async def handle_antigravity_auth_open_on_pc(request):
+    """Opens Google OAuth sign-in directly in the browser on the PC."""
+    res = account_manager.open_oauth_on_pc()
+    return json_response(res)
+
 async def handle_server_logs(request):
     """Returns the last lines of server.log."""
     try:
@@ -812,6 +827,8 @@ def create_app():
     app.router.add_get("/api/antigravity/auth/url", handle_antigravity_auth_url)
     app.router.add_get("/api/antigravity/auth/callback", handle_antigravity_auth_callback)
     app.router.add_post("/api/antigravity/account/code", handle_antigravity_submit_code)
+    app.router.add_get("/api/antigravity/quota", handle_antigravity_quota)
+    app.router.add_post("/api/antigravity/auth/open_on_pc", handle_antigravity_auth_open_on_pc)
     app.router.add_get("/api/server/logs", handle_server_logs)
     app.router.add_get("/download/apk", handle_download_apk)
 

@@ -2792,12 +2792,128 @@ async function fetchAccounts() {
   }
 }
 
+// --- 8.5 ANTIGRAVITY QUOTA & PLAN VIEWER ---
+async function fetchQuotaAndPlan(forceRefresh = false) {
+  const card = document.getElementById("quotaPlanCard");
+  if (!card) return;
+  const btnRefresh = document.getElementById("btnRefreshQuota");
+  if (btnRefresh && forceRefresh) {
+    btnRefresh.classList.add("spinning");
+  }
+  try {
+    const url = forceRefresh ? "/api/antigravity/quota?refresh=1" : "/api/antigravity/quota";
+    const res = await apiCall(url, "GET");
+    if (!res || res.status !== "ok" || !res.quota) return;
+    const q = res.quota || res;
+
+    // Plan & User
+    const badge = document.getElementById("planCrownBadge");
+    if (badge && q.plan) badge.textContent = `👑 ${q.plan}`;
+
+    const userEmail = document.getElementById("planUserEmail");
+    const emailStr = q.user_email || q.user || "";
+    if (userEmail && emailStr) {
+      userEmail.textContent = q.user_name ? `${q.user_name} (${emailStr})` : emailStr;
+    }
+
+    const credits = document.getElementById("planCreditsPill");
+    const creditsVal = q.credits !== undefined ? q.credits : (q.ai_credits !== undefined ? q.ai_credits : 0);
+    if (credits) credits.textContent = `⚡ ${creditsVal} AI Credits`;
+
+    // Gemini 5h Limit
+    const g5h = q.gemini ? { percent: q.gemini.five_hour_percent, reset: q.gemini.five_hour_desc } : q.gemini_5h;
+    if (g5h) {
+      const pct = typeof g5h.percent === "number" ? g5h.percent : 100;
+      const elPct = document.getElementById("quotaGemini5hPercent");
+      const elBar = document.getElementById("quotaGemini5hBar");
+      const elReset = document.getElementById("quotaGemini5hReset");
+      const color = pct < 20 ? "#EF4444" : (pct < 50 ? "#F59E0B" : "#10B981");
+      if (elPct) {
+        elPct.textContent = `${pct}% остаток`;
+        elPct.style.color = color;
+      }
+      if (elBar) {
+        elBar.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+        elBar.style.background = color;
+      }
+      if (elReset && g5h.reset) {
+        elReset.textContent = g5h.reset;
+      }
+    }
+
+    // Gemini Weekly Limit
+    const gWeekly = q.gemini ? { percent: q.gemini.weekly_percent, reset: q.gemini.weekly_desc } : q.gemini_weekly;
+    if (gWeekly) {
+      const pct = typeof gWeekly.percent === "number" ? gWeekly.percent : 100;
+      const elPct = document.getElementById("quotaGeminiWeeklyPercent");
+      const elBar = document.getElementById("quotaGeminiWeeklyBar");
+      const elReset = document.getElementById("quotaGeminiWeeklyReset");
+      const color = pct < 20 ? "#EF4444" : (pct < 50 ? "#F59E0B" : "#10B981");
+      if (elPct) {
+        elPct.textContent = `${pct}% остаток`;
+        elPct.style.color = color;
+      }
+      if (elBar) {
+        elBar.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+        elBar.style.background = color;
+      }
+      if (elReset && gWeekly.reset) {
+        elReset.textContent = gWeekly.reset;
+      }
+    }
+
+    // Claude & GPT
+    const cGpt = q.claude_gpt;
+    if (cGpt) {
+      const pct = typeof cGpt.weekly_percent === "number" ? cGpt.weekly_percent : (typeof cGpt.percent === "number" ? cGpt.percent : 100);
+      const elPct = document.getElementById("quotaClaudePercent");
+      const elBar = document.getElementById("quotaClaudeBar");
+      if (elPct) elPct.textContent = `${pct}% (5h & 7d)`;
+      if (elBar) elBar.style.width = `${pct}%`;
+    }
+
+  } catch (e) {
+    console.warn("fetchQuotaAndPlan error:", e);
+  } finally {
+    if (btnRefresh) {
+      setTimeout(() => btnRefresh.classList.remove("spinning"), 500);
+    }
+  }
+}
+
+// Global hook called by Android native loopback interceptor
+window.handleOAuthCodeReceived = async function(rawCode) {
+  if (!rawCode) return;
+  haptic(35);
+  showToast("🔑 Авторизация в Google подтверждена! Сохраняем аккаунт...");
+  try {
+    const res = await apiCall("/api/antigravity/account/code", "POST", { code: rawCode });
+    if (res && res.status === "ok") {
+      showToast(`🎉 Аккаунт ${res.email} успешно добавлен в Antigravity!`);
+      await fetchAccounts();
+      await fetchQuotaAndPlan(true);
+    } else {
+      showToast(`Ошибка авторизации: ${res?.message || "не удалось сохранить"}`);
+    }
+  } catch (e) {
+    showToast("Ошибка сохранения: " + e.message);
+  }
+};
+
 function initAccountManager() {
   const btnRefresh = document.getElementById("btnRefreshAccounts");
   if (btnRefresh) {
     btnRefresh.addEventListener("click", () => {
       haptic(15);
       fetchAccounts();
+    });
+  }
+
+  const btnRefreshQuota = document.getElementById("btnRefreshQuota");
+  if (btnRefreshQuota) {
+    btnRefreshQuota.addEventListener("click", () => {
+      haptic(15);
+      fetchQuotaAndPlan(true);
     });
   }
 
@@ -2808,13 +2924,39 @@ function initAccountManager() {
       try {
         const res = await apiCall("/api/antigravity/auth/url", "GET");
         if (res && res.url) {
-          showToast("🌐 Открываем Google OAuth...");
-          window.open(res.url, "_blank");
+          showToast("🌐 Открываем Google OAuth во внешнем браузере...");
+          // Google blocks embedded WebViews with 403 disallowed_useragent.
+          // Open in native system browser (Chrome):
+          if (window.AndroidBridge && typeof window.AndroidBridge.openInExternalBrowser === "function") {
+            window.AndroidBridge.openInExternalBrowser(res.url);
+          } else {
+            window.open(res.url, "_blank");
+          }
         } else {
           showToast("Не удалось получить OAuth URL");
         }
       } catch (e) {
         showToast("Ошибка: " + e.message);
+      }
+    });
+  }
+
+  const btnOpenPc = document.getElementById("btnOpenGoogleOnPc");
+  if (btnOpenPc) {
+    btnOpenPc.addEventListener("click", async () => {
+      haptic(20);
+      try {
+        btnOpenPc.disabled = true;
+        const res = await apiCall("/api/antigravity/auth/open_on_pc", "POST", {});
+        if (res && res.status === "ok") {
+          showToast("💻 Страница входа в Google открыта на ПК!");
+        } else {
+          showToast(`Ошибка: ${res?.message || "не удалось открыть"}`);
+        }
+      } catch (e) {
+        showToast("Ошибка: " + e.message);
+      } finally {
+        setTimeout(() => { btnOpenPc.disabled = false; }, 2500);
       }
     });
   }
@@ -2848,8 +2990,17 @@ function initAccountManager() {
   const inputManual = document.getElementById("inputManualAuthCode");
   if (btnSubmitManual && inputManual) {
     btnSubmitManual.addEventListener("click", async () => {
-      const code = inputManual.value.trim();
+      let code = inputManual.value.trim();
       if (!code) return;
+      // Auto-extract code if full URL was pasted
+      if (code.includes("code=")) {
+        try {
+          const match = code.match(/[?&]code=([^&]+)/);
+          if (match && match[1]) {
+            code = decodeURIComponent(match[1]);
+          }
+        } catch (e) {}
+      }
       haptic(25);
       btnSubmitManual.textContent = "...";
       btnSubmitManual.disabled = true;
@@ -2860,6 +3011,7 @@ function initAccountManager() {
           inputManual.value = "";
           manualBox.style.display = "none";
           await fetchAccounts();
+          await fetchQuotaAndPlan(true);
         } else {
           showToast(`Ошибка: ${res?.message || "Неверный код"}`);
         }
@@ -2874,6 +3026,7 @@ function initAccountManager() {
 
   // Initial load
   fetchAccounts();
+  fetchQuotaAndPlan();
 }
 
 // --- 10. SERVER LIVE LOGS VIEWER ---
