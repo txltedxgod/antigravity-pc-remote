@@ -53,6 +53,22 @@ def setup_scheduled_task():
     except Exception as e:
         print(f"⚠️ Could not register scheduled task: {e}")
 
+def setup_registry_run():
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0,
+            winreg.KEY_SET_VALUE
+        )
+        cmd_val = f'wscript.exe "{START_VBS}"'
+        winreg.SetValueEx(key, "PCRemoteServer", 0, winreg.REG_SZ, cmd_val)
+        winreg.CloseKey(key)
+        print(f"✅ Registry Run key written: PCRemoteServer -> {cmd_val}")
+    except Exception as e:
+        print(f"⚠️ Could not write Registry Run key: {e}")
+
 def configure_power_plan():
     commands = [
         ["powercfg", "/change", "standby-timeout-ac", "0"],
@@ -69,6 +85,7 @@ def configure_power_plan():
 if __name__ == "__main__":
     print("=== Configuring PC Remote Autostart & 24/7 Remote Readiness ===")
     setup_startup_folder()
+    setup_registry_run()
     setup_scheduled_task()
     configure_power_plan()
     print("=== Setup Complete! ===")

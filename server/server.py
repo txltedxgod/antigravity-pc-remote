@@ -10,6 +10,7 @@ import logging
 import os
 import socket
 import sys
+import time
 from pathlib import Path
 from aiohttp import web
 
@@ -213,7 +214,11 @@ async def handle_pc_action(request):
         res = win32_controls.restart_pc()
         return json_response(res)
 
-    elif action in ("cancel_restart", "cancel_reboot", "abort_restart"):
+    elif action in ("shutdown", "poweroff", "turn_off"):
+        res = win32_controls.shutdown_pc()
+        return json_response(res)
+
+    elif action in ("cancel_restart", "cancel_reboot", "abort_restart", "cancel_shutdown", "cancel_power"):
         res = win32_controls.cancel_restart_pc()
         return json_response(res)
 
@@ -535,9 +540,23 @@ async def handle_antigravity_status(request):
     return json_response(status)
 
 async def handle_antigravity_launch(request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     win32_controls.wake_screen()
-    ready, status = await antigravity_bridge.ensure_antigravity_ready(timeout=25)
-    return json_response({"status": "ok" if ready else "error", "antigravity": status})
+    if body.get("restart"):
+        account_manager.stop_antigravity_gracefully()
+    ready, status = await antigravity_bridge.ensure_antigravity_ready(timeout=30)
+    conv_id = (body.get("conversation_id") or "").strip()
+    if ready and conv_id and conv_id != "new":
+        await asyncio.sleep(1.0)
+        await antigravity_bridge.switch_conversation(conv_id)
+    return json_response({
+        "status": "ok" if ready else "error",
+        "antigravity": status,
+        "message": "🚀 Antigravity запущен и готов к работе!" if ready else "⚠️ Не удалось дождаться запуска Antigravity CDP"
+    })
 
 async def handle_antigravity_conversations(request):
     convs = await antigravity_bridge.get_conversations_list()
@@ -656,8 +675,91 @@ async def handle_antigravity_accounts(request):
     res = account_manager.list_saved_accounts()
     return json_response(res)
 
+PENDING_SWITCH_FILE = SERVER_DIR / "pending_switch_resume.json"
+_switch_status = {
+    "in_progress": False,
+    "step": "idle",
+    "email": "",
+    "conv_id": "",
+    "auto_continue": False,
+    "message": "",
+    "updated_at": 0
+}
+
+def _update_switch_status(in_progress, step, email="", conv_id="", auto_continue=False, message=""):
+    _switch_status.update({
+        "in_progress": in_progress,
+        "step": step,
+        "email": email,
+        "conv_id": conv_id,
+        "auto_continue": auto_continue,
+        "message": message,
+        "updated_at": int(time.time())
+    })
+
+async def _restart_and_resume_task(email: str, conv_id: str, auto_continue: bool, do_restart: bool = True):
+    """
+    Background workflow after switching Google account:
+    1. Gracefully restarts Antigravity IDE (or launches it if needed)
+    2. Waits until CDP + React chat UI is fully mounted
+    3. Restores the exact conversation tab (`conv_id`)
+    4. Sends seamless continuation prompt if `auto_continue` is enabled
+    """
+    try:
+        if do_restart:
+            _update_switch_status(True, "restarting_ide", email, conv_id, auto_continue, "Перезапуск Antigravity с новым профилем...")
+            logging.info(f"[SwitchResume] Gracefully stopping and relaunching Antigravity for {email}...")
+            await asyncio.to_thread(account_manager.stop_antigravity_gracefully)
+            antigravity_bridge.launch_antigravity(force=True)
+            await asyncio.sleep(2.5)
+
+        _update_switch_status(True, "waiting_cdp", email, conv_id, auto_continue, "Ожидание готовности IDE...")
+        ready, _ = await antigravity_bridge.ensure_antigravity_ready(timeout=40)
+        if not ready:
+            _update_switch_status(False, "error", email, conv_id, auto_continue, "Таймаут запуска Antigravity")
+            return
+
+        # Give Electron extension host & workspace a moment to hydrate
+        await asyncio.sleep(2.5)
+        antigravity_bridge.clear_quota_cache()
+
+        if conv_id and conv_id != "new":
+            _update_switch_status(True, "restoring_chat", email, conv_id, auto_continue, "Восстанавливаем активный диалог...")
+            logging.info(f"[SwitchResume] Restoring active conversation {conv_id}...")
+            await antigravity_bridge.switch_conversation(conv_id)
+            await antigravity_bridge.wait_for_chat_ui_ready(timeout=18)
+            await asyncio.sleep(1.0)
+
+            if auto_continue:
+                _update_switch_status(True, "continuing_task", email, conv_id, auto_continue, "Отправляем сигнал продолжения задачи...")
+                resume_prompt = (
+                    f"Аккаунт Antigravity успешно переключён на {email}. "
+                    "Продолжай выполнение текущей задачи автономно с того места, где мы остановились."
+                )
+                send_res = await antigravity_bridge.send_prompt_to_antigravity(resume_prompt, conv_id=conv_id)
+                logging.info(f"[SwitchResume] Auto-continue result: {send_res}")
+
+        if PENDING_SWITCH_FILE.exists():
+            try:
+                PENDING_SWITCH_FILE.unlink()
+            except Exception:
+                pass
+
+        _update_switch_status(False, "done", email, conv_id, auto_continue, f"Профиль {email} активен, работа продолжается!")
+    except Exception as e:
+        logging.error(f"[SwitchResume] Error during resume workflow: {e}", exc_info=True)
+        _update_switch_status(False, "error", email, conv_id, auto_continue, str(e))
+
+async def handle_antigravity_switch_status(request):
+    """Returns real-time status of account switch / mid-task resume workflow."""
+    return json_response({"status": "ok", **_switch_status})
+
 async def handle_antigravity_switch_account(request):
-    """Switches active Antigravity account to requested email and restarts IDE."""
+    """
+    Switches active Antigravity account to requested email:
+    preserves active conversation, cleanly restarts IDE with new token,
+    reopens the exact chat tab, and resumes interrupted task seamlessly.
+    """
     try:
         body = await request.json()
     except Exception:
@@ -665,7 +767,37 @@ async def handle_antigravity_switch_account(request):
     email = body.get("email", "").strip()
     if not email:
         return json_response({"status": "error", "message": "Email is required"}, status=400)
-    res = account_manager.switch_account_profile(email)
+
+    conv_id = (body.get("conversation_id") or body.get("conv_id") or "").strip()
+    if not conv_id:
+        conv_id = await antigravity_bridge.get_active_conversation_id() or ""
+    auto_continue = bool(body.get("auto_continue", True))
+
+    _update_switch_status(True, "switching_credentials", email, conv_id, auto_continue, f"Переключаем токен на {email}...")
+    res = await asyncio.to_thread(account_manager.switch_account_profile, email, False)
+    if res.get("status") != "ok":
+        _update_switch_status(False, "error", email, conv_id, auto_continue, res.get("message", "Ошибка переключения"))
+        return json_response(res)
+
+    antigravity_bridge.clear_quota_cache()
+
+    # Persist switch-resume marker on disk in case server itself restarts
+    try:
+        PENDING_SWITCH_FILE.write_text(json.dumps({
+            "email": email,
+            "conv_id": conv_id,
+            "auto_continue": auto_continue,
+            "timestamp": time.time()
+        }), encoding="utf-8")
+    except Exception:
+        pass
+
+    asyncio.create_task(_restart_and_resume_task(email, conv_id, auto_continue, do_restart=True))
+
+    res["restarting"] = True
+    res["conv_id"] = conv_id
+    res["auto_continue"] = auto_continue
+    res["message"] = f"Переключаем на {email}... Диалог и задача продолжат работу автоматически!"
     return json_response(res)
 
 async def handle_antigravity_delete_account(request):
@@ -823,6 +955,7 @@ def create_app():
     app.router.add_post("/api/antigravity/launch", handle_antigravity_launch)
     app.router.add_get("/api/antigravity/accounts", handle_antigravity_accounts)
     app.router.add_post("/api/antigravity/account/switch", handle_antigravity_switch_account)
+    app.router.add_get("/api/antigravity/account/switch_status", handle_antigravity_switch_status)
     app.router.add_post("/api/antigravity/account/delete", handle_antigravity_delete_account)
     app.router.add_get("/api/antigravity/auth/url", handle_antigravity_auth_url)
     app.router.add_get("/api/antigravity/auth/callback", handle_antigravity_auth_callback)
@@ -836,7 +969,43 @@ def create_app():
     if MOBILE_APP_DIR.exists():
         app.router.add_static("/", MOBILE_APP_DIR, show_index=True)
 
+    app.on_startup.append(on_server_startup)
     return app
+
+async def _boot_antigravity_and_resume():
+    """
+    Runs once when server starts (e.g. after PC reboot):
+    1. Checks if a pending account switch / resume marker exists
+    2. Auto-launches Antigravity IDE if it isn't running yet
+    """
+    await asyncio.sleep(4.0)
+    try:
+        if PENDING_SWITCH_FILE.exists():
+            try:
+                data = json.loads(PENDING_SWITCH_FILE.read_text(encoding="utf-8"))
+                if time.time() - data.get("timestamp", 0) < 300:
+                    logging.info(f"[BootResume] Found pending switch resume for {data.get('email')}")
+                    await _restart_and_resume_task(
+                        data.get("email", ""),
+                        data.get("conv_id", ""),
+                        bool(data.get("auto_continue", True)),
+                        do_restart=False
+                    )
+                    return
+                else:
+                    PENDING_SWITCH_FILE.unlink()
+            except Exception as e:
+                logging.warning(f"[BootResume] Error reading marker: {e}")
+
+        if not antigravity_bridge.is_antigravity_running():
+            logging.info("[BootAutoLaunch] Antigravity not running on boot. Auto-launching IDE...")
+            win32_controls.wake_screen()
+            await antigravity_bridge.ensure_antigravity_ready(timeout=35)
+    except Exception as e:
+        logging.error(f"[BootAutoLaunch] Error: {e}")
+
+async def on_server_startup(app):
+    asyncio.create_task(_boot_antigravity_and_resume())
 
 def run_server(port=8765):
     ip = get_lan_ip()

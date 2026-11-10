@@ -74,6 +74,22 @@
         </div>
       </div>
 
+      <!-- Antigravity Closed Banner (PC online, IDE closed) -->
+      <div class="offline-banner" id="ideClosedBanner" style="display: none; background: rgba(245, 158, 11, 0.08); border-color: rgba(245, 158, 11, 0.35);">
+        <div class="banner-content">
+          <div class="pulse-ring" style="background: #F59E0B;"></div>
+          <div class="banner-texts">
+            <span class="banner-title" style="color: #FBBF24;">Antigravity на ПК не запущен</span>
+            <span class="banner-desc">Нажми «Запустить» или отправь сообщение — IDE поднимется сама</span>
+          </div>
+        </div>
+        <div class="offline-actions">
+          <button class="btn btn-primary-compact" id="btnBannerLaunchIde" type="button" style="background: #F59E0B; color: #09090B; font-weight: 700;">
+            🚀 Запустить
+          </button>
+        </div>
+      </div>
+
       <!-- Top Chat Controls Bar -->
       <div class="chat-header-bar">
         <button class="active-conv-pill" id="btnOpenSidebar" title="Открыть историю диалогов">
@@ -306,6 +322,12 @@
           <div style="font-size: 13px; color: var(--text-muted); text-align: center; padding: 12px;">Загрузка аккаунтов...</div>
         </div>
 
+        <!-- Mid-Task Switch Continuation Toggle -->
+        <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: #E4E4E7; margin-bottom: 10px; cursor: pointer; user-select: none;">
+          <input type="checkbox" id="chkAutoContinueOnSwitch" checked style="accent-color: #10B981; width: 15px; height: 15px;">
+          <span>🔄 Автоматически продолжать диалог после смены аккаунта</span>
+        </label>
+
         <!-- Action Buttons -->
         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
           <button class="btn btn-primary" id="btnAddGoogleAccount" type="button" style="flex: 1; min-width: 140px; font-size: 13px;">
@@ -315,6 +337,9 @@
           <button class="btn btn-secondary" id="btnOpenGoogleOnPc" type="button" style="font-size: 13px;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
             <span>💻 Вход на ПК</span>
+          </button>
+          <button class="btn btn-secondary" id="btnLaunchAntigravity" type="button" style="font-size: 13px; border-color: rgba(16, 185, 129, 0.35); color: #34D399;">
+            <span>🚀 Запустить IDE</span>
           </button>
           <button class="btn btn-secondary" id="btnRestartAntigravity" type="button" style="font-size: 13px;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
@@ -404,17 +429,16 @@
         </div>
       </div>
 
-      <!-- System & Screen -->
+      <!-- System & Power -->
       <div class="monochrome-card">
         <div class="card-title-row">
           <div class="card-title-icon">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-              <line x1="8" y1="21" x2="16" y2="21"></line>
-              <line x1="12" y1="17" x2="12" y2="21"></line>
+              <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+              <line x1="12" y1="2" x2="12" y2="12"></line>
             </svg>
           </div>
-          <span class="card-heading">Экран и безопасность</span>
+          <span class="card-heading">Питание, Экран и Запуск</span>
         </div>
         <div class="btn-grid-3">
           <button class="tactile-btn tactile-warn" id="btnLockPc">
@@ -441,6 +465,21 @@
           </button>
         </div>
         <div class="btn-grid-2" style="margin-top: 8px;">
+          <button class="tactile-btn" id="btnControlsWakePc" style="border-color: rgba(16, 185, 129, 0.45); color: #34D399; background: rgba(16, 185, 129, 0.08);">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+            </svg>
+            <span>Включить ПК (WoL)</span>
+          </button>
+          <button class="tactile-btn tactile-danger" id="btnShutdownPc">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+              <line x1="12" y1="2" x2="12" y2="12"></line>
+            </svg>
+            <span>Выключить ПК</span>
+          </button>
+        </div>
+        <div class="btn-grid-2" style="margin-top: 8px;">
           <button class="tactile-btn tactile-danger" id="btnRestartPc">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="23 4 23 10 17 10"></polyline>
@@ -454,7 +493,15 @@
               <line x1="15" y1="9" x2="9" y2="15"></line>
               <line x1="9" y1="9" x2="15" y2="15"></line>
             </svg>
-            <span>Отмена ребута</span>
+            <span>Отмена выкл/ребута</span>
+          </button>
+        </div>
+        <div style="margin-top: 8px;">
+          <button class="tactile-btn" id="btnControlsLaunchIde" style="width: 100%; border-color: rgba(59, 130, 246, 0.4); color: #60A5FA; background: rgba(59, 130, 246, 0.08);">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            </svg>
+            <span id="controlsIdeStatusLabel">🚀 Запустить Antigravity IDE</span>
           </button>
         </div>
         <div style="margin-top: 8px;">

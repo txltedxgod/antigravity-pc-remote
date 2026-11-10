@@ -140,11 +140,34 @@ def update_app_storage_email(email: str):
             logger.warning(f"Could not update app_storage.json: {e}")
     return False
 
+def stop_antigravity_gracefully():
+    """Closes Antigravity cleanly first, force-kills only if hung, and clears stale DevTools port file."""
+    try:
+        subprocess.run("taskkill /IM Antigravity.exe", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Wait briefly for clean flush
+        for _ in range(5):
+            time.sleep(0.5)
+            out = subprocess.check_output("tasklist /FI \"IMAGENAME eq Antigravity.exe\"", shell=True).decode("utf-8", errors="ignore")
+            if "antigravity.exe" not in out.lower():
+                break
+        else:
+            subprocess.run("taskkill /F /IM Antigravity.exe", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(1.0)
+    except Exception as e:
+        logger.debug(f"stop_antigravity_gracefully note: {e}")
+
+    # Remove stale DevToolsActivePort so subsequent CDP probe never hits a dead port
+    port_file = Path(os.path.expandvars(r"%APPDATA%\Antigravity\DevToolsActivePort"))
+    if port_file.exists():
+        try:
+            port_file.unlink()
+        except Exception:
+            pass
+
 def restart_antigravity():
     """Gracefully terminates and relaunches Antigravity desktop executable."""
     try:
-        subprocess.run("taskkill /F /IM Antigravity.exe", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(1.5)
+        stop_antigravity_gracefully()
         exe = Path(os.path.expandvars(r"%LOCALAPPDATA%\Programs\antigravity\Antigravity.exe"))
         if exe.exists():
             flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
@@ -229,7 +252,7 @@ def refresh_google_token(refresh_token: str):
         logger.error(f"Error refreshing Google token: {e}")
         return None
 
-def switch_account_profile(target_email: str):
+def switch_account_profile(target_email: str, restart: bool = True):
     """
     Switches active Antigravity account to target_email:
     1. Backs up current active credential
@@ -237,7 +260,7 @@ def switch_account_profile(target_email: str):
     3. Refreshes token if needed
     4. Writes to Windows Credential Manager (gemini:antigravity)
     5. Updates app_storage.json
-    6. Restarts Antigravity IDE
+    6. Optionally restarts Antigravity IDE
     """
     target_email = (target_email or "").strip().lower()
     profile_path = ACCOUNTS_DIR / f"{target_email}.json"
@@ -271,7 +294,7 @@ def switch_account_profile(target_email: str):
             return {"status": "error", "message": "Сбой записи в Windows Credential Manager"}
 
         update_app_storage_email(target_email)
-        restarted = restart_antigravity()
+        restarted = restart_antigravity() if restart else False
 
         logger.info(f"Successfully switched Antigravity account to {target_email} (Restarted: {restarted})")
         return {

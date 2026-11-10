@@ -41,28 +41,28 @@ def get_active_cdp_port(fallback=DEFAULT_CDP_PORT):
     return fallback
 
 def is_antigravity_running():
-    """Checks whether Antigravity processes are currently active in the OS."""
+    """Checks whether Antigravity main executable processes are currently active in the OS."""
     try:
         import psutil
         for p in psutil.process_iter(['name']):
             name = (p.info.get('name') or '').lower()
-            if "antigravity" in name:
+            if name == "antigravity.exe" or ("antigravity" in name and "crashpad" not in name):
                 return True
     except Exception:
         try:
             out = subprocess.check_output("tasklist", shell=True).decode("utf-8", errors="ignore")
-            if "antigravity" in out.lower():
+            if "antigravity.exe" in out.lower():
                 return True
         except Exception:
             pass
     return False
 
-def launch_antigravity():
+def launch_antigravity(force=False):
     """Launches Antigravity desktop executable detached from the server."""
-    if is_antigravity_running():
+    if not force and is_antigravity_running():
         return True
     if os.path.exists(ANTIGRAVITY_EXE):
-        logger.info(f"Antigravity not running. Launching: {ANTIGRAVITY_EXE}")
+        logger.info(f"Launching Antigravity executable (force={force}): {ANTIGRAVITY_EXE}")
         exe_path = Path(ANTIGRAVITY_EXE)
         try:
             flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
@@ -81,17 +81,47 @@ def ensure_antigravity_running():
     """Legacy alias for backward compatibility."""
     return launch_antigravity()
 
-async def ensure_antigravity_ready(timeout=25):
+async def wait_for_chat_ui_ready(port=None, timeout=18):
+    """Polls Antigravity CDP until the chat input element is mounted and interactive."""
+    start_time = time.time()
+    check_js = """
+    (() => {
+        const el = document.querySelector('[aria-label="Message input"]') ||
+                   document.querySelector('[contenteditable="true"]') ||
+                   document.querySelector('textarea');
+        return !!el;
+    })()
+    """
+    while time.time() - start_time < timeout:
+        target = await find_antigravity_target(port)
+        if target and target.get("webSocketDebuggerUrl"):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.ws_connect(target["webSocketDebuggerUrl"], timeout=aiohttp.ClientTimeout(total=2.0)) as ws:
+                        await ws.send_str(json.dumps({
+                            "id": 901,
+                            "method": "Runtime.evaluate",
+                            "params": {"expression": check_js, "returnByValue": True}
+                        }))
+                        reply = await asyncio.wait_for(ws.receive_json(), timeout=1.5)
+                        if reply.get("result", {}).get("result", {}).get("value") is True:
+                            return True
+            except Exception:
+                pass
+        await asyncio.sleep(0.8)
+    return False
+
+async def ensure_antigravity_ready(timeout=30):
     """
     Ensures Antigravity is up and responds via DevTools HTTP endpoint.
-    If not running, automatically launches it and waits until CDP is ready.
+    If not running, automatically launches it and waits until CDP & UI are ready.
     """
     target = await find_antigravity_target()
     if target:
         return True, "already_running"
 
     logger.info("Antigravity DevTools not reachable. Launching Antigravity...")
-    launch_antigravity()
+    launch_antigravity(force=True)
 
     start_time = time.time()
     while time.time() - start_time < timeout:
@@ -99,12 +129,20 @@ async def ensure_antigravity_ready(timeout=25):
         target = await find_antigravity_target()
         if target:
             elapsed = time.time() - start_time
-            logger.info(f"Antigravity became ready after {elapsed:.1f}s!")
-            await asyncio.sleep(1.5)  # Let Electron window settle
+            logger.info(f"Antigravity CDP ready after {elapsed:.1f}s! Waiting for UI hydration...")
+            await wait_for_chat_ui_ready(timeout=12)
             return True, "launched"
 
     logger.warning("Antigravity launch timed out waiting for DevTools endpoint.")
     return False, "timeout"
+
+async def get_active_conversation_id(port=None):
+    """Extracts the active conversation UUID from Antigravity's current CDP target URL."""
+    target = await find_antigravity_target(port)
+    if not target:
+        return None
+    m = re.search(r"/c/([a-f0-9\-]+)", target.get("url", ""))
+    return m.group(1) if m else None
 
 async def find_antigravity_target(port=None):
     """Finds the active Antigravity conversation tab via DevTools HTTP endpoints."""
@@ -121,13 +159,15 @@ async def find_antigravity_target(port=None):
                         p_url = p.get("url", "")
                         if "/c/" in p_url and "antigravity" in p.get("title", "").lower():
                             return p
-                    # Priority 2: Any Antigravity title
+                    # Priority 2: Any Antigravity title (skip data:text/html frames)
                     for p in pages:
-                        if "antigravity" in p.get("title", "").lower() and p.get("type") == "page":
+                        p_url = p.get("url", "")
+                        if "antigravity" in p.get("title", "").lower() and p.get("type") == "page" and not p_url.startswith("data:"):
                             return p
-                    # Priority 3: First page
-                    if pages:
-                        return pages[0]
+                    # Priority 3: First regular page
+                    for p in pages:
+                        if p.get("type") == "page" and not p.get("url", "").startswith("data:"):
+                            return p
     except Exception as e:
         logger.debug(f"Failed to query CDP on port {port}: {e}")
     return None
@@ -1320,6 +1360,12 @@ def parse_antigravity_quota_text(raw_text):
             data["claude_gpt"]["five_hour_percent"] = int(m_c5.group(1))
 
     return data
+
+def clear_quota_cache():
+    """Clears cached quota snapshot (e.g. after switching accounts)."""
+    global _quota_cache, _quota_cache_time
+    _quota_cache = None
+    _quota_cache_time = 0
 
 async def get_antigravity_quota_and_plan(port=None, force=False, force_refresh=False):
     """

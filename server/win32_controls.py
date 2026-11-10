@@ -556,10 +556,15 @@ def restart_pc():
     subprocess.run("shutdown /r /t 5", shell=True)
     return {"status": "ok", "message": "System reboot initiated (5s delay)"}
 
+def shutdown_pc():
+    """Initiates a safe PC shutdown with 5 seconds warning."""
+    subprocess.run("shutdown /s /t 5", shell=True)
+    return {"status": "ok", "message": "System shutdown initiated (5s delay)"}
+
 def cancel_restart_pc():
-    """Aborts a pending system reboot."""
+    """Aborts a pending system reboot or shutdown."""
     subprocess.run("shutdown /a", shell=True)
-    return {"status": "ok", "message": "Reboot aborted"}
+    return {"status": "ok", "message": "Power action aborted"}
 
 # --- VIRTUAL MOUSE & TOUCHPAD ---
 def mouse_move_relative(dx: int, dy: int):

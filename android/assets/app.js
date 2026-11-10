@@ -1603,8 +1603,15 @@ async function pollStatus() {
 
     // Antigravity Bridge Status
     const agRes = await apiCall("/api/antigravity/status");
+    const ideClosedBanner = document.getElementById("ideClosedBanner");
+    const controlsIdeLabel = document.getElementById("controlsIdeStatusLabel");
     if (agRes && agRes.connected) {
+      if (ideClosedBanner) ideClosedBanner.style.display = "none";
+      if (controlsIdeLabel) controlsIdeLabel.textContent = "✅ Antigravity активен (Фокус / Поднять)";
       loadConversations();
+    } else {
+      if (ideClosedBanner) ideClosedBanner.style.display = "flex";
+      if (controlsIdeLabel) controlsIdeLabel.textContent = "🚀 Запустить Antigravity IDE (Сейчас закрыт)";
     }
 
   } catch (err) {
@@ -1617,9 +1624,13 @@ function setConnectionState(online) {
   const badge = document.getElementById("connBadge");
   const text = document.getElementById("connText");
   const offlineCard = document.getElementById("offlineCard");
+  const ideClosedBanner = document.getElementById("ideClosedBanner");
 
   if (offlineCard) {
     offlineCard.style.display = online ? "none" : "flex";
+  }
+  if (!online && ideClosedBanner) {
+    ideClosedBanner.style.display = "none";
   }
 
   if (!badge || !text) return;
@@ -1947,20 +1958,58 @@ function setupEvents() {
     });
   }
 
-  // Wake-on-LAN Button
-  const btnWol = document.getElementById("btnWakeOnLan");
-  if (btnWol) {
-    btnWol.addEventListener("click", () => {
-      haptic(40);
-      if (window.AndroidBridge && typeof window.AndroidBridge.sendWakeOnLan === "function") {
-        window.AndroidBridge.sendWakeOnLan(config.mac || "A83B7676208F");
-      }
-      showToast("📡 Пакет WoL отправлен! Проверяем ПК...");
-      for (let i = 1; i <= 8; i++) {
-        setTimeout(pollStatus, i * 1200);
-      }
-    });
+  // Wake-on-LAN Shared Trigger (Wi-Fi + Ethernet MACs)
+  function sendWakeOnLanPacket() {
+    haptic(40);
+    if (window.AndroidBridge && typeof window.AndroidBridge.sendWakeOnLan === "function") {
+      const macs = new Set([config.mac || "A83B7676208F", "A83B7676208F", "BCECA04104C0"]);
+      macs.forEach(m => {
+        try { window.AndroidBridge.sendWakeOnLan(m); } catch (e) {}
+      });
+      showToast("📡 Magic Packet (WoL) отправлен на Wi-Fi и LAN! Ждем ПК...");
+    } else {
+      showToast("ℹ️ WoL доступен из Android APK в одной Wi-Fi сети");
+    }
+    for (let i = 1; i <= 10; i++) {
+      setTimeout(pollStatus, i * 1500);
+    }
   }
+
+  // Launch / Restart Antigravity IDE helper
+  async function triggerLaunchAntigravity(restart = false, triggerBtn = null) {
+    haptic(30);
+    if (triggerBtn) triggerBtn.disabled = true;
+    showToast(restart ? "🔄 Перезапускаем Antigravity IDE..." : "🚀 Запускаем Antigravity IDE на ПК...");
+    try {
+      const res = await apiCall("/api/antigravity/launch", "POST", {
+        restart,
+        conversation_id: currentConvId || ""
+      });
+      if (res && res.status === "ok") {
+        showToast(res.message || "✅ Antigravity готов к работе!");
+        await pollStatus();
+        if (currentConvId) await fetchChat(true);
+      } else {
+        showToast(`⚠️ ${res?.message || "Ожидание запуска IDE..."}`);
+      }
+    } catch (e) {
+      showToast("Ошибка запуска IDE: " + e.message);
+    } finally {
+      if (triggerBtn) setTimeout(() => { triggerBtn.disabled = false; }, 2500);
+    }
+  }
+
+  const btnWol = document.getElementById("btnWakeOnLan");
+  if (btnWol) btnWol.addEventListener("click", sendWakeOnLanPacket);
+
+  const btnControlsWakePc = document.getElementById("btnControlsWakePc");
+  if (btnControlsWakePc) btnControlsWakePc.addEventListener("click", sendWakeOnLanPacket);
+
+  const btnBannerLaunchIde = document.getElementById("btnBannerLaunchIde");
+  if (btnBannerLaunchIde) btnBannerLaunchIde.addEventListener("click", () => triggerLaunchAntigravity(false, btnBannerLaunchIde));
+
+  const btnControlsLaunchIde = document.getElementById("btnControlsLaunchIde");
+  if (btnControlsLaunchIde) btnControlsLaunchIde.addEventListener("click", () => triggerLaunchAntigravity(false, btnControlsLaunchIde));
 
   // Connect via Cloudflare from offline banner
   const btnConnectCloud = document.getElementById("btnConnectCloud");
@@ -2015,17 +2064,26 @@ function setupEvents() {
     }
   });
 
+  const btnShutdownPc = document.getElementById("btnShutdownPc");
+  if (btnShutdownPc) btnShutdownPc.addEventListener("click", () => {
+    if (confirm("⚠️ Точно ПОЛНОСТЬЮ ВЫКЛЮЧИТЬ компьютер?\n\nПока вы рядом в одной Wi-Fi сети, его можно разбудить кнопкой WoL (если включено в BIOS). Из другой страны по интернету выключенный ПК без питания не включится.")) {
+      triggerAction("shutdown");
+      showToast("⏻ Выключение ПК через 5 сек... Нажми 'Отмена', если передумал!");
+    }
+  });
+
   const btnRestartPc = document.getElementById("btnRestartPc");
   if (btnRestartPc) btnRestartPc.addEventListener("click", () => {
-    if (confirm("🔄 Перезагрузить ПК? Сервер перезапустится автоматически и восстановит связь через 15-20 секунд.")) {
+    if (confirm("🔄 Перезагрузить ПК? Сервер и Antigravity перезапустятся автоматически и восстановят связь через 15-25 секунд.")) {
       triggerAction("restart");
-      showToast("⏳ Перезагрузка ПК... Сервер и туннель поднимутся автоматически.");
+      showToast("⏳ Перезагрузка ПК... Сервер и Antigravity поднимутся сами.");
     }
   });
 
   const btnCancelRestart = document.getElementById("btnCancelRestart");
   if (btnCancelRestart) btnCancelRestart.addEventListener("click", () => {
-    triggerAction("cancel_restart");
+    triggerAction("cancel_shutdown");
+    showToast("🛑 Выключение / перезагрузка отменены!");
   });
 
   // Browser Search
@@ -2774,24 +2832,52 @@ async function fetchAccounts() {
       btn.addEventListener("click", async () => {
         const email = btn.getAttribute("data-email");
         if (!email) return;
+        const chkAuto = document.getElementById("chkAutoContinueOnSwitch");
+        const autoContinue = chkAuto ? chkAuto.checked : true;
         haptic(25);
         btn.textContent = "Переключение...";
         btn.disabled = true;
         try {
-          const switchRes = await apiCall("/api/antigravity/account/switch", "POST", { email });
+          const switchRes = await apiCall("/api/antigravity/account/switch", "POST", {
+            email,
+            conversation_id: currentConvId || "",
+            auto_continue: autoContinue
+          });
           if (switchRes && switchRes.status === "ok") {
-            showToast(`✅ Аккаунт переключен на ${email}! IDE синхронизируется...`);
-            btn.textContent = "Обновление...";
-            setTimeout(async () => {
-              await fetchAccounts();
-              await fetchQuotaAndPlan(true);
-              if (currentConvId) {
-                await apiCall("/api/antigravity/conversation/switch", "POST", { id: currentConvId }).catch(() => {});
-                await fetchChat(true);
+            showToast(autoContinue
+              ? `🔄 Переключаем на ${email}... Диалог и задача подхватятся сами!`
+              : `✅ Аккаунт ${email} выбран! Перезапускаем IDE...`);
+            btn.textContent = "Запуск IDE...";
+
+            // Poll backend resume status every 1.5s up to 35s
+            let attempts = 0;
+            const pollTimer = setInterval(async () => {
+              attempts++;
+              try {
+                const st = await apiCall("/api/antigravity/account/switch_status", "GET");
+                if (st && st.step) {
+                  if (st.step === "restarting_ide") btn.textContent = "Рестарт IDE...";
+                  else if (st.step === "waiting_cdp") btn.textContent = "Ждём IDE...";
+                  else if (st.step === "restoring_chat") btn.textContent = "Открываем чат...";
+                  else if (st.step === "continuing_task") btn.textContent = "Запускаем задачу...";
+
+                  if (!st.in_progress || attempts >= 24) {
+                    clearInterval(pollTimer);
+                    await fetchAccounts();
+                    await fetchQuotaAndPlan(true);
+                    if (currentConvId) await fetchChat(true);
+                    showToast(st.step === "done"
+                      ? `✅ Профиль ${email} активен, работа продолжается!`
+                      : (st.message || `Готово: ${email}`));
+                  }
+                }
+              } catch (pollErr) {
+                if (attempts >= 24) {
+                  clearInterval(pollTimer);
+                  fetchAccounts();
+                }
               }
-              btn.textContent = "Переключить";
-              btn.disabled = false;
-            }, 3000);
+            }, 1500);
           } else {
             showToast(`Ошибка: ${switchRes?.message || "Не удалось переключить"}`);
             btn.textContent = "Переключить";
@@ -2997,19 +3083,56 @@ function initAccountManager() {
     });
   }
 
+  const chkAutoContinue = document.getElementById("chkAutoContinueOnSwitch");
+  if (chkAutoContinue) {
+    const savedPref = localStorage.getItem("pc_remote_auto_continue_switch");
+    if (savedPref !== null) chkAutoContinue.checked = savedPref === "true";
+    chkAutoContinue.addEventListener("change", () => {
+      localStorage.setItem("pc_remote_auto_continue_switch", String(chkAutoContinue.checked));
+    });
+  }
+
+  const btnLaunchIde = document.getElementById("btnLaunchAntigravity");
+  if (btnLaunchIde) {
+    btnLaunchIde.addEventListener("click", async () => {
+      haptic(25);
+      btnLaunchIde.disabled = true;
+      showToast("🚀 Запускаем Antigravity IDE на ПК...");
+      try {
+        const res = await apiCall("/api/antigravity/launch", "POST", {
+          restart: false,
+          conversation_id: currentConvId || ""
+        });
+        showToast(res?.message || "✅ Antigravity запущен!");
+        await pollStatus();
+        await fetchQuotaAndPlan(true);
+      } catch (e) {
+        showToast("Ошибка запуска IDE: " + e.message);
+      } finally {
+        setTimeout(() => { btnLaunchIde.disabled = false; }, 2500);
+      }
+    });
+  }
+
   const btnRestart = document.getElementById("btnRestartAntigravity");
   if (btnRestart) {
     btnRestart.addEventListener("click", async () => {
-      if (!confirm("Перезапустить процесс Antigravity на ПК?")) return;
+      if (!confirm("Перезапустить процесс Antigravity на ПК? Диалог автоматически откроется заново.")) return;
       haptic(30);
       btnRestart.disabled = true;
+      showToast("🔄 Перезапускаем Antigravity IDE...");
       try {
-        const res = await apiCall("/api/antigravity/launch", "POST", {});
-        showToast(res?.message || "🔄 Запрос на перезапуск отправлен");
+        const res = await apiCall("/api/antigravity/launch", "POST", {
+          restart: true,
+          conversation_id: currentConvId || ""
+        });
+        showToast(res?.message || "🔄 Перезапуск завершен!");
+        await pollStatus();
+        await fetchQuotaAndPlan(true);
       } catch (e) {
         showToast("Ошибка перезапуска: " + e.message);
       } finally {
-        setTimeout(() => { btnRestart.disabled = false; }, 3000);
+        setTimeout(() => { btnRestart.disabled = false; }, 3500);
       }
     });
   }
