@@ -6,6 +6,8 @@ import android.app.AlertDialog;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
@@ -107,6 +109,23 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void copyToClipboard(final String text) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        ClipboardManager cm = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+                        if (cm != null) {
+                            ClipData clip = ClipData.newPlainText("PC Remote", text);
+                            cm.setPrimaryClip(clip);
+                            Toast.makeText(context, "Скопировано в буфер", Toast.LENGTH_SHORT).show();
+                        }
+                    } catch (Exception ignored) {}
+                }
+            });
+        }
+
+        @JavascriptInterface
         public boolean sendWakeOnLan(final String macStr) {
             try {
                 String cleanMac = (macStr == null ? "A83B7676208F" : macStr).replaceAll("[^0-9A-Fa-f]", "");
@@ -168,6 +187,8 @@ public class MainActivity extends Activity {
 
         webView = new WebView(this);
         webView.setBackgroundColor(0xFF09090B);
+        webView.setLongClickable(true);
+        webView.setHapticFeedbackEnabled(true);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);

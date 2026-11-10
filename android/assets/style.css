@@ -41,7 +41,16 @@
   margin: 0;
   padding: 0;
   -webkit-tap-highlight-color: transparent;
-  user-select: none;
+}
+
+/* --- TEXT SELECTION & HIGHLIGHT --- */
+::selection {
+  background: rgba(16, 185, 129, 0.45);
+  color: #FFFFFF;
+}
+::-moz-selection {
+  background: rgba(16, 185, 129, 0.45);
+  color: #FFFFFF;
 }
 
 html, body {
@@ -55,6 +64,77 @@ html, body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
+/* Explicitly enable text selection and native callout for all content text */
+.chat-feed,
+.chat-feed *,
+.chat-msg,
+.msg-bubble-user,
+.msg-bubble-user *,
+.msg-bubble-assistant,
+.msg-bubble-assistant *,
+.cmd-console-output,
+.cmd-console-output *,
+pre,
+code,
+p,
+span,
+h1, h2, h3, h4, h5, h6,
+li,
+td, th,
+.active-win-pill,
+.modal-body,
+.monochrome-card p,
+.custom-input {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default !important;
+}
+
+/* Keep UI chrome, navigation and buttons non-selectable for clean native feel */
+button,
+nav,
+.nav-item,
+.chip,
+.macro-chip,
+.btn,
+.icon-btn,
+.tactile-btn,
+.btn-icon-square,
+.header,
+.chat-header-bar,
+.trackpad-area,
+.brightness-slider,
+.bottom-nav {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  -webkit-touch-callout: none !important;
+}
+
+.btn-copy-msg {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: transparent;
+  border: 1px solid #27272A;
+  color: #A1A1AA;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-left: auto;
+  transition: all 0.15s ease;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+.btn-copy-msg:hover {
+  background: #27272A;
+  color: #FAFAFA;
+  border-color: #3F3F46;
 }
 
 /* --- APP HEADER --- */

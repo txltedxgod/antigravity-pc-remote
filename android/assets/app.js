@@ -266,7 +266,43 @@ function renderMarkdown(md) {
   return text;
 }
 
-// Copy Code & Send to Terminal Handler
+// --- UNIFIED CLIPBOARD COPY HELPER ---
+function copyTextToClipboard(text, customToastMsg = "📋 Скопировано в буфер!") {
+  if (!text) return;
+  haptic(20);
+  if (window.AndroidBridge && typeof window.AndroidBridge.copyToClipboard === "function") {
+    window.AndroidBridge.copyToClipboard(text);
+    showToast(customToastMsg);
+    return;
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast(customToastMsg);
+    }).catch(() => fallbackCopyText(text, customToastMsg));
+  } else {
+    fallbackCopyText(text, customToastMsg);
+  }
+}
+
+function fallbackCopyText(text, customToastMsg) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.top = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    showToast(customToastMsg);
+  } catch (e) {
+    showToast("Не удалось скопировать");
+  }
+}
+
+// Copy Code, Message & Send to Terminal Handler
 document.addEventListener("click", (e) => {
   if (e.target && e.target.classList.contains("btn-send-to-terminal")) {
     const code = decodeURIComponent(e.target.getAttribute("data-code") || "");
@@ -286,24 +322,22 @@ document.addEventListener("click", (e) => {
     return;
   }
 
-  if (e.target && e.target.classList.contains("btn-copy-code")) {
-    const code = decodeURIComponent(e.target.getAttribute("data-code") || "");
-    if (!code) return;
-    haptic(25);
-    
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(code).then(() => {
-        showToast("Код скопирован в буфер!");
-      });
-    } else {
-      const ta = document.createElement("textarea");
-      ta.value = code;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      ta.remove();
-      showToast("Код скопирован!");
+  const copyMsgBtn = e.target.closest ? e.target.closest(".btn-copy-msg") : null;
+  if (copyMsgBtn) {
+    const raw = decodeURIComponent(copyMsgBtn.getAttribute("data-raw-msg") || "");
+    if (raw) {
+      copyTextToClipboard(raw, "📋 Сообщение скопировано в буфер!");
     }
+    return;
+  }
+
+  const copyCodeBtn = e.target.closest ? e.target.closest(".btn-copy-code") : null;
+  if (copyCodeBtn) {
+    const code = decodeURIComponent(copyCodeBtn.getAttribute("data-code") || "");
+    if (code) {
+      copyTextToClipboard(code, "📋 Код скопирован в буфер!");
+    }
+    return;
   }
 });
 
@@ -1042,14 +1076,26 @@ async function fetchChat(autoScroll = true) {
               ${imgTag}
               <div>${escapeHtml(msg.text)}</div>
             </div>
-            <div class="msg-meta">${timeStr}</div>
+            <div class="msg-meta" style="display: flex; align-items: center; justify-content: space-between;">
+              <span>${timeStr || ""}</span>
+              <button class="btn-copy-msg" data-raw-msg="${encodeURIComponent(msg.text)}" title="Скопировать сообщение" type="button">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <span>Копировать</span>
+              </button>
+            </div>
           `;
         } else {
           bubble.innerHTML = `
             <div class="msg-bubble-assistant">${renderMarkdown(msg.text)}</div>
-            <div class="msg-meta">
-              <span>Antigravity</span>
-              ${timeStr ? `<span>• ${timeStr}</span>` : ""}
+            <div class="msg-meta" style="display: flex; align-items: center; justify-content: space-between;">
+              <div>
+                <span>Antigravity</span>
+                ${timeStr ? `<span>• ${timeStr}</span>` : ""}
+              </div>
+              <button class="btn-copy-msg" data-raw-msg="${encodeURIComponent(msg.text)}" title="Скопировать сообщение" type="button">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <span>Копировать</span>
+              </button>
             </div>
           `;
         }
