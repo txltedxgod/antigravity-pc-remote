@@ -135,6 +135,17 @@
 
       <!-- Docked Bottom Input Area (ChatGPT Style) -->
       <div class="chat-input-dock">
+        <!-- User Custom Macros Bar -->
+        <div class="custom-macros-row" id="customMacrosRow">
+          <div class="custom-macros-scroll" id="customMacrosList">
+            <!-- Dynamically populated from localStorage -->
+          </div>
+          <button class="btn-add-macro" id="btnAddCustomMacro" title="Добавить свой макрос" type="button">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            <span>+ Макрос</span>
+          </button>
+        </div>
+
         <!-- Quick Chips Carousel (Clean monochrome with SVG icons) -->
         <div class="chips-carousel">
           <button class="chip" data-prompt="Продолжай выполнение задачи">
@@ -269,7 +280,7 @@
               <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
               <line x1="23" y1="12" x2="17" y2="12"></line>
             </svg>
-            <span>-5%</span>
+            <span>-10%</span>
           </button>
           <button class="tactile-btn tactile-mute" id="btnVolMute">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -284,8 +295,15 @@
               <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
               <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
             </svg>
-            <span>+5%</span>
+            <span>+10%</span>
           </button>
+        </div>
+        <div class="cmd-presets-row" style="margin-top: 8px;">
+          <button class="vol-preset-chip" data-vol="0">🔇 0%</button>
+          <button class="vol-preset-chip" data-vol="25">🔉 25%</button>
+          <button class="vol-preset-chip" data-vol="50">🔉 50%</button>
+          <button class="vol-preset-chip" data-vol="75">🔊 75%</button>
+          <button class="vol-preset-chip" data-vol="100">🔊 100%</button>
         </div>
       </div>
 
@@ -371,6 +389,14 @@
               <line x1="9" y1="9" x2="15" y2="15"></line>
             </svg>
             <span>Отмена ребута</span>
+          </button>
+        </div>
+        <div style="margin-top: 8px;">
+          <button class="tactile-btn tactile-coffee" id="btnToggleKeepAwake" style="width: 100%;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 8h1a4 4 0 0 1 0 8h-1M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8zM6 1v3M10 1v3M14 1v3"/>
+            </svg>
+            <span id="keepAwakeLabel">☕ Антисон (Caffeine): ВКЛ</span>
           </button>
         </div>
       </div>
@@ -512,6 +538,43 @@
           <input type="text" id="webSearchInput" class="custom-input" placeholder="URL или поисковый запрос..." />
           <button class="btn btn-primary-compact" id="btnOpenWebSearch">
             <span>Открыть</span>
+          </button>
+        </div>
+        <div class="cmd-presets-row" style="margin-top: 8px;">
+          <button class="url-preset-chip" data-url="https://google.com">Google</button>
+          <button class="url-preset-chip" data-url="https://youtube.com">YouTube</button>
+          <button class="url-preset-chip" data-url="https://github.com">GitHub</button>
+          <button class="url-preset-chip" data-url="https://chatgpt.com">ChatGPT</button>
+          <button class="url-preset-chip" data-url="https://web.telegram.org">Telegram</button>
+        </div>
+      </div>
+
+      <!-- Text-to-Speech Voice Card -->
+      <div class="monochrome-card">
+        <div class="card-title-row space-between">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div class="card-title-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="23"/>
+                <line x1="8" y1="23" x2="16" y2="23"/>
+              </svg>
+            </div>
+            <span class="card-heading">Голос ноутбука (Text-to-Speech)</span>
+          </div>
+          <span class="chip-label" id="ttsStatus">SAPI Voice</span>
+        </div>
+        <div class="cmd-presets-row" style="margin-bottom: 8px;">
+          <button class="tts-preset-chip" data-text="Привет из солнечной Грузии!">🇬🇪 Из Грузии</button>
+          <button class="tts-preset-chip" data-text="Отойди от ноутбука, идёт удаленная работа!">🛑 Отойди</button>
+          <button class="tts-preset-chip" data-text="Я на связи, всё под контролем!">⚡ На связи</button>
+          <button class="tts-preset-chip" data-text="Сборка и тесты успешно завершены!">🧪 Тесты OK</button>
+        </div>
+        <div class="search-input-row">
+          <input type="text" id="ttsInput" class="custom-input" placeholder="Текст для озвучки через динамики..." />
+          <button class="btn btn-primary-compact" id="btnSpeakText" type="button">
+            <span>Сказать</span>
           </button>
         </div>
       </div>
@@ -795,12 +858,21 @@
         <div class="fs-breadcrumbs" id="fsBreadcrumbs">
           <button class="fs-crumb-btn active" id="btnFsHome" type="button">🏠 Корневые папки</button>
           <button class="fs-crumb-btn" id="btnFsUp" style="display: none;" type="button">⬆ Наверх</button>
-          <button class="chip-action" id="btnRefreshFs" style="margin-left: auto;" type="button">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
-            </svg>
-            <span>Обновить</span>
-          </button>
+          <div style="margin-left: auto; display: flex; gap: 6px;">
+            <input type="file" id="fsUploadInput" style="display: none;" />
+            <button class="chip-action" id="btnFsUpload" title="Загрузить файл с телефона на ПК" type="button">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+              </svg>
+              <span>Загрузить</span>
+            </button>
+            <button class="chip-action" id="btnRefreshFs" type="button">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+              </svg>
+              <span>Обновить</span>
+            </button>
+          </div>
         </div>
 
         <div class="fs-file-list" id="fsFileList">
@@ -869,10 +941,10 @@
         </div>
 
         <!-- DISK C: -->
-        <div class="monochrome-card stat-tile">
+        <div class="monochrome-card stat-tile" id="diskCardC">
           <div class="stat-top">
             <div>
-              <span class="stat-label">ДИСК C:</span>
+              <span class="stat-label">ДИСК C: (NVMe SSD)</span>
               <span class="stat-sublabel" id="diskDetail">Свободно 0 ГБ</span>
             </div>
             <span class="stat-val" id="diskStat">0%</span>
@@ -880,6 +952,35 @@
           <div class="gauge-bar">
             <div class="gauge-fill" id="diskFill" style="width: 0%"></div>
           </div>
+        </div>
+
+        <!-- DISK D: -->
+        <div class="monochrome-card stat-tile" id="diskCardD">
+          <div class="stat-top">
+            <div>
+              <span class="stat-label">ДИСК D: (ДАННЫЕ)</span>
+              <span class="stat-sublabel" id="diskDetailD">Свободно 0 ГБ</span>
+            </div>
+            <span class="stat-val" id="diskStatD">0%</span>
+          </div>
+          <div class="gauge-bar">
+            <div class="gauge-fill" id="diskFillD" style="width: 0%"></div>
+          </div>
+        </div>
+
+        <!-- NETWORK PING -->
+        <div class="monochrome-card stat-tile" id="pingCard">
+          <div class="stat-top">
+            <div>
+              <span class="stat-label">СЕТЬ И ПИНГ (8.8.8.8)</span>
+              <span class="stat-sublabel" id="pingStatus">🟢 Онлайн</span>
+            </div>
+            <span class="stat-val" id="pingStat">-- ms</span>
+          </div>
+          <div class="gauge-bar">
+            <div class="gauge-fill" id="pingFill" style="width: 10%"></div>
+          </div>
+          <div class="stat-subinfo" id="pingDetail">Пинг до серверов Google</div>
         </div>
 
         <!-- BATTERY (АККУМУЛЯТОР) -->
@@ -937,17 +1038,27 @@
       <!-- Clipboard Bridge -->
       <div class="monochrome-card">
         <div class="card-title-row space-between">
-          <span class="card-heading-sm">Буфер обмена ПК (Clipboard)</span>
-          <button class="chip-action" id="btnRefreshClip">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
-            </svg>
-            <span>Обновить</span>
-          </button>
+          <span class="card-heading-sm">Буфер обмена ПК (Синхронизация)</span>
+          <div style="display: flex; gap: 6px;">
+            <button class="chip-action" id="btnCopyClipToPhone" title="Скопировать текст буфера ПК на телефон">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+              <span>В телефон</span>
+            </button>
+            <button class="chip-action" id="btnRefreshClip">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+              </svg>
+              <span>Обновить</span>
+            </button>
+          </div>
         </div>
         <div class="clipboard-display" id="pcClipboardView">Нажмите «Обновить» для чтения буфера ПК</div>
         <div class="clipboard-input-row">
           <input type="text" id="clipInput" class="custom-input" placeholder="Текст для буфера ПК...">
+          <button class="btn btn-secondary-compact" id="btnPastePhoneToClip" title="Вставить из буфера телефона" type="button">📋 Из тел</button>
           <button class="btn btn-primary-compact" id="btnSendClip">Отправить</button>
         </div>
       </div>

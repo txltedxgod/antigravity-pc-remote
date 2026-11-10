@@ -41,15 +41,23 @@ ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 ES_AWAYMODE_REQUIRED = 0x00000040
 
+_keep_awake_state = True
+
 def set_keep_awake(enable=True):
     """
     Enables Away Mode: PC allows monitor to sleep after timeout,
     but keeps CPU, network, and remote server running 24/7 without deep S3 sleep.
     """
+    global _keep_awake_state
+    _keep_awake_state = bool(enable)
     if enable:
         kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED)
     else:
         kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+    return _keep_awake_state
+
+def get_keep_awake():
+    return _keep_awake_state
 
 # CPU Calculation State
 class FILETIME(ctypes.Structure):
@@ -693,3 +701,53 @@ def get_system_uptime():
         return {"uptime_sec": uptime_sec, "uptime_hours": hours}
     except Exception:
         return {"uptime_sec": 0, "uptime_hours": 0}
+
+def speak_text(text: str):
+    """Speaks text asynchronously using Windows SAPI."""
+    try:
+        import win32com.client
+        speaker = win32com.client.Dispatch("SAPI.SpVoice")
+        clean_text = str(text or "").strip()[:500]
+        if not clean_text:
+            return {"status": "error", "message": "Text is empty"}
+        # SVSFlagsAsync = 1
+        speaker.Speak(clean_text, 1)
+        return {"status": "ok", "text": clean_text}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def get_disk_stats():
+    """Returns disk partitions, usage, total, used, free GB and percentage."""
+    import psutil
+    disks = []
+    for p in psutil.disk_partitions(all=False):
+        try:
+            usage = psutil.disk_usage(p.mountpoint)
+            disks.append({
+                "device": p.device,
+                "mountpoint": p.mountpoint,
+                "total_gb": round(usage.total / (1024**3), 1),
+                "used_gb": round(usage.used / (1024**3), 1),
+                "free_gb": round(usage.free / (1024**3), 1),
+                "percent": usage.percent
+            })
+        except Exception:
+            pass
+    return disks
+
+def get_network_ping(host: str = "8.8.8.8"):
+    """Measures network ping and online latency to DNS or host."""
+    import subprocess, time, re
+    t0 = time.time()
+    try:
+        res = subprocess.run(
+            ["ping", "-n", "1", "-w", "1000", host],
+            capture_output=True, text=True, timeout=2.5
+        )
+        elapsed = round((time.time() - t0) * 1000, 1)
+        m = re.search(r"время[=<](\d+)мс|time[=<](\d+)ms", res.stdout, re.IGNORECASE)
+        ms = int(m.group(1) or m.group(2)) if m else int(elapsed)
+        return {"status": "ok", "latency_ms": ms, "online": (res.returncode == 0), "host": host}
+    except Exception as e:
+        return {"status": "error", "latency_ms": None, "online": False, "message": str(e), "host": host}
+

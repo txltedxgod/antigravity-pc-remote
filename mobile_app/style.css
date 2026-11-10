@@ -2362,3 +2362,100 @@ html, body {
   gap: 6px;
   margin-top: 8px;
 }
+
+/* --- CUSTOM USER MACROS BAR --- */
+.custom-macros-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.custom-macros-row::-webkit-scrollbar {
+  display: none;
+}
+.custom-macros-scroll {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.macro-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  background: #18181B;
+  border: 1px solid #27272A;
+  border-radius: 9999px;
+  color: #E4E4E7;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.macro-chip:hover {
+  background: #27272A;
+  border-color: #3F3F46;
+}
+.macro-chip-del {
+  margin-left: 3px;
+  font-size: 10px;
+  color: #71717A;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.macro-chip-del:hover {
+  color: #EF4444;
+}
+.btn-add-macro {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  background: #27272A;
+  border: 1px dashed #3F3F46;
+  border-radius: 9999px;
+  color: #A1A1AA;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.btn-add-macro:hover {
+  color: #F4F4F5;
+  border-color: #71717A;
+}
+
+/* --- TACTILE COFFEE / CAFFEINE --- */
+.tactile-coffee {
+  border-color: #78350F !important;
+  background: #1C1917 !important;
+  color: #FBBF24 !important;
+  font-weight: 600;
+}
+.tactile-coffee.active {
+  background: #451A03 !important;
+  border-color: #D97706 !important;
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.25);
+}
+
+/* --- PRESET CHIPS --- */
+.vol-preset-chip, .url-preset-chip, .tts-preset-chip {
+  padding: 4px 8px;
+  font-size: 11px;
+  background: #18181B;
+  border: 1px solid #27272A;
+  border-radius: 6px;
+  color: #D4D4D8;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.vol-preset-chip:hover, .url-preset-chip:hover, .tts-preset-chip:hover {
+  background: #27272A;
+  border-color: #3F3F46;
+  color: #FAFAFA;
+}
+

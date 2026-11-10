@@ -127,6 +127,8 @@ async def handle_pc_status(request):
         "cpu_pct": cpu,
         "memory": mem,
         "battery": battery_info,
+        "disks": win32_controls.get_disk_stats(),
+        "keep_awake": win32_controls.get_keep_awake(),
         "uptime": win32_controls.get_system_uptime(),
         "brightness": win32_controls.get_display_brightness(),
         "active_window": win_title,
@@ -429,6 +431,90 @@ async def handle_fs_read(request):
     except Exception as e:
         return json_response({"status": "error", "message": str(e)}, status=500)
 
+async def handle_fs_upload(request):
+    """Uploads a file (base64 encoded) from mobile client to host PC."""
+    try:
+        body = await request.json()
+    except Exception:
+        return json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+
+    filename = body.get("filename", "").strip()
+    folder = body.get("folder", "").strip()
+    data_b64 = body.get("data", "")
+
+    if not filename or not data_b64:
+        return json_response({"status": "error", "message": "Filename and data are required"}, status=400)
+
+    import base64
+    if "," in data_b64:
+        data_b64 = data_b64.split(",", 1)[1]
+
+    try:
+        raw_bytes = base64.b64decode(data_b64)
+    except Exception as e:
+        return json_response({"status": "error", "message": f"Base64 decode failed: {e}"}, status=400)
+
+    clean_name = Path(filename).name
+    if not clean_name:
+        clean_name = f"upload_{int(time.time())}.bin"
+
+    target_dir = Path(folder) if folder else Path.home() / "Downloads"
+    if not target_dir.exists() or not target_dir.is_dir():
+        target_dir = Path.home() / "Downloads"
+
+    target_file = target_dir / clean_name
+    try:
+        with open(target_file, "wb") as f:
+            f.write(raw_bytes)
+        logger.info(f"File uploaded successfully: {target_file} ({len(raw_bytes)} bytes)")
+        return json_response({
+            "status": "ok",
+            "message": f"Файл {clean_name} успешно сохранён ({round(len(raw_bytes)/1024, 1)} KB)",
+            "path": str(target_file),
+            "size": len(raw_bytes)
+        })
+    except Exception as e:
+        return json_response({"status": "error", "message": str(e)}, status=500)
+
+async def handle_pc_disks(request):
+    """Returns disk space usage for all local partitions."""
+    disks = win32_controls.get_disk_stats()
+    return json_response({"status": "ok", "disks": disks})
+
+async def handle_pc_ping(request):
+    """Measures network ping and internet connectivity."""
+    host = request.query.get("host", "8.8.8.8")
+    res = win32_controls.get_network_ping(host)
+    return json_response(res)
+
+async def handle_pc_speak(request):
+    """Speaks text through host PC speakers via SAPI."""
+    try:
+        body = await request.json()
+    except Exception:
+        return json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+    text = body.get("text", "")
+    res = win32_controls.speak_text(text)
+    return json_response(res)
+
+async def handle_get_keepawake(request):
+    """Gets current keep-awake status."""
+    return json_response({"status": "ok", "keep_awake": win32_controls.get_keep_awake()})
+
+async def handle_set_keepawake(request):
+    """Enables or disables keep-awake (Away Mode)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if "enable" in body:
+        enable = bool(body["enable"])
+    else:
+        enable = not win32_controls.get_keep_awake()
+    state = win32_controls.set_keep_awake(enable)
+    return json_response({"status": "ok", "keep_awake": state})
+
+
 async def handle_get_clipboard(request):
     text = win32_controls.get_clipboard_text()
     return json_response({"status": "ok", "text": text})
@@ -598,6 +684,12 @@ def create_app():
     app.router.add_get("/api/fs/list", handle_fs_list)
     app.router.add_get("/api/fs/download", handle_fs_download)
     app.router.add_get("/api/fs/read", handle_fs_read)
+    app.router.add_post("/api/fs/upload", handle_fs_upload)
+    app.router.add_get("/api/pc/disks", handle_pc_disks)
+    app.router.add_get("/api/pc/ping", handle_pc_ping)
+    app.router.add_post("/api/pc/speak", handle_pc_speak)
+    app.router.add_get("/api/pc/keepawake", handle_get_keepawake)
+    app.router.add_post("/api/pc/keepawake", handle_set_keepawake)
     app.router.add_get("/api/clipboard", handle_get_clipboard)
     app.router.add_post("/api/clipboard", handle_set_clipboard)
     app.router.add_get("/api/antigravity/status", handle_antigravity_status)

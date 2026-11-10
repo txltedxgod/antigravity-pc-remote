@@ -843,6 +843,9 @@ async function pollTelemetry() {
       if (diskFill) diskFill.style.width = `${Math.min(data.disk.percent, 100)}%`;
       if (diskDetail) diskDetail.textContent = `Свободно ${data.disk.free_gb} из ${data.disk.total_gb} ГБ`;
     }
+
+    // Ping check
+    checkNetworkPing();
   } catch (e) {
     console.debug("Telemetry error:", e);
   }
@@ -1466,6 +1469,16 @@ async function pollStatus() {
     // Battery & Power State
     if (pcStatus.battery) {
       updateBatteryDisplay(pcStatus.battery);
+    }
+
+    // Keep-Awake / Caffeine Mode
+    if (pcStatus.keep_awake !== undefined) {
+      updateKeepAwakeUI(pcStatus.keep_awake);
+    }
+
+    // Disks Telemetry (C: & D:)
+    if (pcStatus.disks && Array.isArray(pcStatus.disks)) {
+      updateDisksUI(pcStatus.disks);
     }
 
     // Telemetry Gauges
@@ -2517,15 +2530,378 @@ function initBrightnessControls() {
   });
 }
 
+// --- 7. USER CUSTOM MACROS ---
+const DEFAULT_MACROS = [
+  { name: "⚡ Продолжай", prompt: "Продолжай выполнение задачи автономно" },
+  { name: "🧪 Тесты", prompt: "Запусти автоматические тесты и проверь результат" },
+  { name: "💾 Git commit", prompt: "Сделай git commit и запушь в origin main" },
+  { name: "🔍 Логи и ошибки", prompt: "Проверь последние ошибки и логи сервера" },
+  { name: "📦 Релиз APK", prompt: "Собери релизный APK и подготовь отчет" }
+];
+
+function getSavedMacros() {
+  try {
+    const raw = localStorage.getItem("pc_remote_custom_macros");
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return [...DEFAULT_MACROS];
+}
+
+function saveMacros(macros) {
+  try {
+    localStorage.setItem("pc_remote_custom_macros", JSON.stringify(macros));
+  } catch (e) {}
+}
+
+function renderCustomMacros() {
+  const container = document.getElementById("customMacrosList");
+  if (!container) return;
+  const macros = getSavedMacros();
+  container.innerHTML = "";
+
+  macros.forEach((m, idx) => {
+    const chip = document.createElement("button");
+    chip.className = "macro-chip";
+    chip.type = "button";
+    chip.innerHTML = `
+      <span>${escapeHtml(m.name)}</span>
+      <span class="macro-chip-del" data-idx="${idx}" title="Удалить макрос">✕</span>
+    `;
+
+    chip.addEventListener("click", (e) => {
+      if (e.target.classList.contains("macro-chip-del")) {
+        e.stopPropagation();
+        macros.splice(idx, 1);
+        saveMacros(macros);
+        renderCustomMacros();
+        showToast("Макрос удален");
+        return;
+      }
+      haptic(25);
+      injectAndSendPrompt(m.prompt);
+    });
+
+    container.appendChild(chip);
+  });
+}
+
+function initCustomMacros() {
+  renderCustomMacros();
+  const btnAdd = document.getElementById("btnAddCustomMacro");
+  if (btnAdd) {
+    btnAdd.addEventListener("click", () => {
+      haptic(20);
+      const name = prompt("Название кнопки макроса (например, '🚀 Запуск'):");
+      if (!name || !name.trim()) return;
+      const promptText = prompt(`Текст промпта для '${name.trim()}':`);
+      if (!promptText || !promptText.trim()) return;
+      const macros = getSavedMacros();
+      macros.push({ name: name.trim(), prompt: promptText.trim() });
+      saveMacros(macros);
+      renderCustomMacros();
+      showToast(`✓ Макрос '${name.trim()}' добавлен!`);
+    });
+  }
+}
+
+function injectAndSendPrompt(text) {
+  const input = document.getElementById("promptInput");
+  if (!input) return;
+  input.value = text;
+  updateSendButtonState();
+  const btnSend = document.getElementById("btnSendPrompt");
+  if (btnSend) btnSend.click();
+}
+
+// --- 8. CAFFEINE / KEEP-AWAKE AWAY MODE ---
+let isKeepAwakeActive = true;
+function updateKeepAwakeUI(active) {
+  isKeepAwakeActive = !!active;
+  const btn = document.getElementById("btnToggleKeepAwake");
+  const label = document.getElementById("keepAwakeLabel");
+  if (btn) {
+    if (isKeepAwakeActive) {
+      btn.classList.add("active");
+    } else {
+      btn.classList.remove("active");
+    }
+  }
+  if (label) {
+    label.textContent = isKeepAwakeActive ? "☕ Антисон (Caffeine): ВКЛ" : "☕ Антисон (Caffeine): ВЫКЛ";
+  }
+}
+
+function initCaffeineControls() {
+  const btn = document.getElementById("btnToggleKeepAwake");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    haptic(30);
+    const targetState = !isKeepAwakeActive;
+    try {
+      const res = await apiCall("/api/pc/keepawake", "POST", { enable: targetState });
+      if (res && res.status === "ok") {
+        updateKeepAwakeUI(res.keep_awake);
+        showToast(res.keep_awake ? "☕ Антисон включен: ПК не уснет!" : "☕ Антисон отключен: стандартный сон Windows");
+      }
+    } catch (e) {
+      showToast("Ошибка переключения режима сна");
+    }
+  });
+}
+
+// --- 9. TEXT-TO-SPEECH (VOICE ON PC SPEAKERS) ---
+function initTextToSpeech() {
+  const btnSpeak = document.getElementById("btnSpeakText");
+  const input = document.getElementById("ttsInput");
+  if (btnSpeak && input) {
+    const doSpeak = async () => {
+      const text = input.value.trim();
+      if (!text) return;
+      haptic(25);
+      try {
+        const res = await apiCall("/api/pc/speak", "POST", { text });
+        if (res && res.status === "ok") {
+          showToast(`🗣️ Сказано: "${text.slice(0, 25)}"`);
+          input.value = "";
+        }
+      } catch (e) {
+        showToast("Ошибка озвучки на ПК: " + e.message);
+      }
+    };
+    btnSpeak.addEventListener("click", doSpeak);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") doSpeak();
+    });
+  }
+
+  document.querySelectorAll(".tts-preset-chip[data-text]").forEach(chip => {
+    chip.addEventListener("click", async () => {
+      const text = chip.getAttribute("data-text");
+      if (!text) return;
+      haptic(20);
+      try {
+        await apiCall("/api/pc/speak", "POST", { text });
+        showToast(`🗣️ Сказано: "${text}"`);
+      } catch (e) {
+        showToast("Ошибка озвучки");
+      }
+    });
+  });
+}
+
+// --- 10. VOLUME PRESETS ---
+function initVolumePresets() {
+  document.querySelectorAll(".vol-preset-chip[data-vol]").forEach(chip => {
+    chip.addEventListener("click", async () => {
+      const vol = parseInt(chip.getAttribute("data-vol"), 10);
+      haptic(20);
+      try {
+        if (vol === 0) {
+          await triggerAction("volume_mute");
+          showToast("🔇 Звук выключен (Mute)");
+        } else {
+          const steps = Math.round(vol / 10);
+          await triggerAction("volume_up", { steps });
+          showToast(`🔉 Громкость: ~${vol}%`);
+        }
+      } catch (e) {
+        showToast("Ошибка изменения громкости");
+      }
+    });
+  });
+}
+
+// --- 11. QUICK URL LAUNCHER ---
+function initUrlPresets() {
+  document.querySelectorAll(".url-preset-chip[data-url]").forEach(chip => {
+    chip.addEventListener("click", async () => {
+      const url = chip.getAttribute("data-url");
+      if (!url) return;
+      haptic(25);
+      try {
+        await triggerAction("open_url", { url });
+        showToast(`🌐 Открыто в Chrome: ${url}`);
+      } catch (e) {
+        showToast("Ошибка запуска URL");
+      }
+    });
+  });
+}
+
+// --- 12. REMOTE FILE UPLOAD (PHONE -> PC) ---
+function initFileUpload() {
+  const btnUpload = document.getElementById("btnFsUpload");
+  const fileInput = document.getElementById("fsUploadInput");
+  if (!btnUpload || !fileInput) return;
+
+  btnUpload.addEventListener("click", () => {
+    haptic(15);
+    fileInput.click();
+  });
+
+  fileInput.addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 25 * 1024 * 1024) {
+      showToast("Файл слишком велик (макс 25 МБ)");
+      fileInput.value = "";
+      return;
+    }
+
+    showToast(`📤 Загрузка файла: ${file.name}...`);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const res = await apiCall("/api/fs/upload", "POST", {
+          filename: file.name,
+          folder: currentFsPath,
+          data: reader.result
+        });
+        if (res && res.status === "ok") {
+          showToast(`✅ ${res.message || "Файл успешно сохранён на ПК!"}`);
+          fileInput.value = "";
+          loadFsDirectory(currentFsPath);
+        } else {
+          showToast("Ошибка сохранения файла: " + (res.message || ""));
+        }
+      } catch (err) {
+        showToast("Сбой загрузки на ПК: " + err.message);
+      }
+    };
+    reader.onerror = () => {
+      showToast("Ошибка чтения файла на телефоне");
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// --- 13. BIDIRECTIONAL CLIPBOARD SYNC ---
+function initClipboardSync() {
+  const btnToPhone = document.getElementById("btnCopyClipToPhone");
+  const btnFromPhone = document.getElementById("btnPastePhoneToClip");
+  const clipBox = document.getElementById("pcClipboardView");
+  const clipInput = document.getElementById("clipInput");
+
+  if (btnToPhone && clipBox) {
+    btnToPhone.addEventListener("click", async () => {
+      haptic(20);
+      const text = clipBox.textContent;
+      if (!text || text === "(Буфер обмена ПК пуст)" || text.startsWith("Нажмите")) {
+        showToast("Буфер ПК пуст");
+        return;
+      }
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          showToast("📋 Текст скопирован в буфер телефона!");
+        } else {
+          showToast("Буфер недоступен в этом контексте");
+        }
+      } catch (e) {
+        showToast("Не удалось скопировать на телефон");
+      }
+    });
+  }
+
+  if (btnFromPhone && clipInput) {
+    btnFromPhone.addEventListener("click", async () => {
+      haptic(20);
+      try {
+        if (navigator.clipboard && navigator.clipboard.readText) {
+          const text = await navigator.clipboard.readText();
+          if (text) {
+            clipInput.value = text;
+            showToast("📋 Вставлено из телефона!");
+          } else {
+            showToast("Буфер телефона пуст");
+          }
+        }
+      } catch (e) {
+        showToast("Разрешите доступ к буферу в браузере");
+      }
+    });
+  }
+}
+
+// --- 14. DISKS & PING TELEMETRY ---
+function updateDisksUI(disks) {
+  if (!disks || !Array.isArray(disks)) return;
+  disks.forEach(d => {
+    const isC = d.device.startsWith("C") || d.mountpoint.startsWith("C");
+    const isD = d.device.startsWith("D") || d.mountpoint.startsWith("D");
+
+    if (isC) {
+      const stat = document.getElementById("diskStat");
+      const fill = document.getElementById("diskFill");
+      const detail = document.getElementById("diskDetail");
+      if (stat) stat.textContent = `${d.percent}%`;
+      if (fill) {
+        fill.style.width = `${Math.min(d.percent, 100)}%`;
+        fill.style.background = d.percent > 90 ? "#EF4444" : (d.percent > 75 ? "#F59E0B" : "var(--accent-primary)");
+      }
+      if (detail) detail.textContent = `Свободно ${d.free_gb} из ${d.total_gb} ГБ`;
+    } else if (isD) {
+      const cardD = document.getElementById("diskCardD");
+      if (cardD) cardD.style.display = "block";
+      const statD = document.getElementById("diskStatD");
+      const fillD = document.getElementById("diskFillD");
+      const detailD = document.getElementById("diskDetailD");
+      if (statD) statD.textContent = `${d.percent}%`;
+      if (fillD) {
+        fillD.style.width = `${Math.min(d.percent, 100)}%`;
+        fillD.style.background = d.percent > 90 ? "#EF4444" : (d.percent > 75 ? "#F59E0B" : "var(--accent-primary)");
+      }
+      if (detailD) detailD.textContent = `Свободно ${d.free_gb} из ${d.total_gb} ГБ`;
+    }
+  });
+}
+
+let lastPingCheck = 0;
+async function checkNetworkPing() {
+  const now = Date.now();
+  if (now - lastPingCheck < 8000) return;
+  lastPingCheck = now;
+  try {
+    const res = await apiCall("/api/pc/ping");
+    const stat = document.getElementById("pingStat");
+    const fill = document.getElementById("pingFill");
+    const status = document.getElementById("pingStatus");
+    const detail = document.getElementById("pingDetail");
+
+    if (res && res.status === "ok") {
+      const ms = res.latency_ms;
+      if (stat) stat.textContent = `${ms} ms`;
+      if (status) {
+        status.textContent = ms < 50 ? "🟢 Отличный" : (ms < 120 ? "🟡 Нормальный" : "🔴 Высокий");
+      }
+      if (fill) {
+        fill.style.width = `${Math.min(ms, 100)}%`;
+        fill.style.background = ms > 120 ? "#EF4444" : (ms > 50 ? "#F59E0B" : "#10B981");
+      }
+      if (detail) detail.textContent = `Google DNS (${res.host || "8.8.8.8"})`;
+    }
+  } catch (e) {}
+}
+
 // Initializer
 window.addEventListener("DOMContentLoaded", () => {
   setupEvents();
+  initCustomMacros();
+  initCaffeineControls();
+  initTextToSpeech();
+  initVolumePresets();
+  initUrlPresets();
+  initFileUpload();
+  initClipboardSync();
+  initFileExplorer();
+  initBrightnessControls();
   discoverCloudUrl();
   pollStatus();
   loadConversations();
   fetchChat(true);
   fetchActiveWindows();
   pollTelemetry();
+  checkNetworkPing();
 
   // Notification permissions request if supported
   try {
