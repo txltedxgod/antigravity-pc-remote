@@ -1,1 +1,1 @@
-https://toward-crest-clearing-identification.trycloudflare.com
+https://api.trycloudflare.com
