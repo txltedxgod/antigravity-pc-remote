@@ -28,6 +28,7 @@ import win32_controls
 import antigravity_bridge
 import tunnel_manager
 import battery_guard
+import account_manager
 
 log_file = SERVER_DIR / "server.log"
 logging.basicConfig(
@@ -650,6 +651,110 @@ async def handle_antigravity_stop(request):
     res = await antigravity_bridge.stop_agent_execution(conv_id=conv_id)
     return json_response(res)
 
+async def handle_antigravity_accounts(request):
+    """Lists saved and active Antigravity accounts."""
+    res = account_manager.list_saved_accounts()
+    return json_response(res)
+
+async def handle_antigravity_switch_account(request):
+    """Switches active Antigravity account to requested email and restarts IDE."""
+    try:
+        body = await request.json()
+    except Exception:
+        return json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+    email = body.get("email", "").strip()
+    if not email:
+        return json_response({"status": "error", "message": "Email is required"}, status=400)
+    res = account_manager.switch_account_profile(email)
+    return json_response(res)
+
+async def handle_antigravity_delete_account(request):
+    """Deletes an account profile from vault."""
+    try:
+        body = await request.json()
+    except Exception:
+        return json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+    email = body.get("email", "").strip()
+    res = account_manager.delete_account_profile(email)
+    return json_response(res)
+
+async def handle_antigravity_auth_url(request):
+    """Returns Google OAuth authorization URL for mobile/remote login."""
+    redirect_uri = f"http://127.0.0.1:8765/api/antigravity/auth/callback"
+    url = account_manager.get_google_oauth_url(redirect_uri)
+    return json_response({"status": "ok", "url": url, "redirect_uri": redirect_uri})
+
+async def handle_antigravity_auth_callback(request):
+    """Handles Google OAuth redirect after mobile login."""
+    code = request.query.get("code")
+    error = request.query.get("error")
+    if error:
+        return web.Response(text=f"OAuth Error: {error}", status=400)
+    if not code:
+        return web.Response(text="No authorization code received", status=400)
+
+    redirect_uri = f"http://127.0.0.1:8765/api/antigravity/auth/callback"
+    res = account_manager.exchange_auth_code_for_account(code, redirect_uri)
+    email = res.get("email", "Google Account")
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Аккаунт подключен</title>
+  <style>
+    body {{ background: #09090B; color: #FAFAFA; font-family: system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; text-align: center; padding: 20px; }}
+    .card {{ background: #18181B; border: 1px solid #27272A; border-radius: 16px; padding: 32px 24px; max-width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }}
+    h1 {{ font-size: 20px; color: #10B981; margin: 12px 0 6px; }}
+    p {{ color: #A1A1AA; font-size: 14px; margin: 6px 0 16px; line-height: 1.5; }}
+    .email-pill {{ background: #27272A; border: 1px solid #3F3F46; padding: 8px 16px; border-radius: 9999px; font-weight: 600; color: #F4F4F5; display: inline-block; font-size: 14px; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div style="font-size: 48px;">🎉</div>
+    <h1>Аккаунт успешно подключен!</h1>
+    <p>Новый аккаунт установлен в Antigravity на ноутбуке:</p>
+    <div class="email-pill">{email}</div>
+    <p style="margin-top: 20px; font-size: 13px; color: #71717A;">
+      Лимиты и квоты обновлены. Antigravity автоматически перезапущен с новым профилем. Можете закрыть эту страницу и вернуться в приложение.
+    </p>
+  </div>
+</body>
+</html>"""
+    return web.Response(text=html, content_type="text/html", status=200)
+
+async def handle_antigravity_submit_code(request):
+    """Manual submission of Google OAuth auth code."""
+    try:
+        body = await request.json()
+    except Exception:
+        return json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+    code = body.get("code", "").strip()
+    if not code:
+        return json_response({"status": "error", "message": "Code is required"}, status=400)
+    redirect_uri = body.get("redirect_uri", "http://127.0.0.1:8765/api/antigravity/auth/callback")
+    res = account_manager.exchange_auth_code_for_account(code, redirect_uri)
+    return json_response(res)
+
+async def handle_server_logs(request):
+    """Returns the last lines of server.log."""
+    try:
+        limit = int(request.query.get("limit", 40))
+    except Exception:
+        limit = 40
+    log_file = SERVER_DIR / "server.log"
+    if not log_file.exists():
+        return json_response({"status": "ok", "lines": ["(server.log is empty)"]})
+    try:
+        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+        recent = [l.rstrip("\r\n") for l in all_lines[-limit:]]
+        return json_response({"status": "ok", "lines": recent, "total_lines": len(all_lines)})
+    except Exception as e:
+        return json_response({"status": "error", "message": str(e)}, status=500)
+
 async def handle_download_apk(request):
     if not APK_PATH.exists():
         return web.Response(text="APK not found. Please build it first.", status=404)
@@ -701,6 +806,13 @@ def create_app():
     app.router.add_post("/api/antigravity/send", handle_antigravity_send)
     app.router.add_post("/api/antigravity/stop", handle_antigravity_stop)
     app.router.add_post("/api/antigravity/launch", handle_antigravity_launch)
+    app.router.add_get("/api/antigravity/accounts", handle_antigravity_accounts)
+    app.router.add_post("/api/antigravity/account/switch", handle_antigravity_switch_account)
+    app.router.add_post("/api/antigravity/account/delete", handle_antigravity_delete_account)
+    app.router.add_get("/api/antigravity/auth/url", handle_antigravity_auth_url)
+    app.router.add_get("/api/antigravity/auth/callback", handle_antigravity_auth_callback)
+    app.router.add_post("/api/antigravity/account/code", handle_antigravity_submit_code)
+    app.router.add_get("/api/server/logs", handle_server_logs)
     app.router.add_get("/download/apk", handle_download_apk)
 
     # Web Dashboard Static Fallback

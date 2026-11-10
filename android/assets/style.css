@@ -2459,3 +2459,84 @@ html, body {
   color: #FAFAFA;
 }
 
+/* --- ANTIGRAVITY ACCOUNTS VAULT --- */
+.account-vault-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: #141416;
+  border: 1px solid #27272A;
+  border-radius: var(--radius-sm);
+  gap: 8px;
+  transition: border-color 0.15s ease;
+}
+.account-vault-row.is-active {
+  border-color: #10B981;
+  background: rgba(16, 185, 129, 0.05);
+}
+.account-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.account-email {
+  font-size: 13px;
+  font-weight: 600;
+  color: #FAFAFA;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.account-meta {
+  font-size: 11px;
+  color: #71717A;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.account-badge-active {
+  color: #10B981;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.account-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.btn-switch-account {
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #27272A;
+  color: #F4F4F5;
+  border: 1px solid #3F3F46;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn-switch-account:hover {
+  background: #3F3F46;
+  color: #FFFFFF;
+}
+.btn-delete-account {
+  padding: 5px 8px;
+  background: transparent;
+  color: #71717A;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn-delete-account:hover {
+  color: #EF4444;
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+

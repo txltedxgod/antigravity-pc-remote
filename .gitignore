@@ -10,6 +10,7 @@ ENV/
 build/
 *.idsig
 *.log
+.credentials.json
 cloudflared.exe
 .DS_Store
 Thumbs.db

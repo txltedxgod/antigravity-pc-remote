@@ -2649,65 +2649,225 @@ function initCaffeineControls() {
   });
 }
 
-// --- 9. TEXT-TO-SPEECH (VOICE ON PC SPEAKERS) ---
-function initTextToSpeech() {
-  const btnSpeak = document.getElementById("btnSpeakText");
-  const input = document.getElementById("ttsInput");
-  if (btnSpeak && input) {
-    const doSpeak = async () => {
-      const text = input.value.trim();
-      if (!text) return;
-      haptic(25);
-      try {
-        const res = await apiCall("/api/pc/speak", "POST", { text });
-        if (res && res.status === "ok") {
-          showToast(`🗣️ Сказано: "${text.slice(0, 25)}"`);
-          input.value = "";
+// --- 9. ANTIGRAVITY ACCOUNTS VAULT & REMOTE SWITCHER ---
+async function fetchAccounts() {
+  const container = document.getElementById("accountsVaultList");
+  if (!container) return;
+  try {
+    const res = await apiCall("/api/antigravity/accounts", "GET");
+    if (!res || res.status !== "ok") {
+      container.innerHTML = `<div style="font-size: 13px; color: #EF4444; padding: 8px;">Не удалось загрузить аккаунты: ${res?.message || "ошибка"}</div>`;
+      return;
+    }
+    const accounts = res.accounts || [];
+    const activeEmail = res.active_account || res.active_email || "";
+
+    if (accounts.length === 0) {
+      container.innerHTML = `<div style="font-size: 13px; color: var(--text-muted); text-align: center; padding: 10px;">Нет сохраненных аккаунтов. Нажмите «+ Войти в Google».</div>`;
+      return;
+    }
+
+    container.innerHTML = accounts.map(acc => {
+      const email = acc.email || "Unknown";
+      const isActive = acc.is_active || (email === activeEmail);
+      const updated = acc.saved_at ? new Date(acc.saved_at * 1000).toLocaleDateString() : "";
+
+      return `
+        <div class="account-vault-row ${isActive ? 'is-active' : ''}">
+          <div class="account-info">
+            <span class="account-email" title="${email}">${email}</span>
+            <div class="account-meta">
+              ${isActive ? '<span class="account-badge-active">● Активен (Квоты IDE)</span>' : '<span>Сохранен</span>'}
+              ${updated ? `<span>· ${updated}</span>` : ''}
+            </div>
+          </div>
+          <div class="account-actions">
+            ${!isActive ? `
+              <button class="btn-switch-account" data-email="${email}">
+                Переключить
+              </button>
+              <button class="btn-delete-account" data-delete-email="${email}" title="Удалить из списка">
+                ✕
+              </button>
+            ` : '<span style="font-size: 12px; font-weight: 600; color: #10B981; padding: 4px 8px;">Текущий</span>'}
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    // Wire switch buttons
+    container.querySelectorAll(".btn-switch-account[data-email]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const email = btn.getAttribute("data-email");
+        if (!email) return;
+        haptic(25);
+        btn.textContent = "Переключение...";
+        btn.disabled = true;
+        try {
+          const switchRes = await apiCall("/api/antigravity/account/switch", "POST", { email });
+          if (switchRes && switchRes.status === "ok") {
+            showToast(`✅ Аккаунт переключен на ${email}! IDE перезапущена.`);
+            await fetchAccounts();
+          } else {
+            showToast(`Ошибка: ${switchRes?.message || "Не удалось переключить"}`);
+            btn.textContent = "Переключить";
+            btn.disabled = false;
+          }
+        } catch (e) {
+          showToast(`Ошибка сети: ${e.message}`);
+          btn.textContent = "Переключить";
+          btn.disabled = false;
         }
-      } catch (e) {
-        showToast("Ошибка озвучки на ПК: " + e.message);
-      }
-    };
-    btnSpeak.addEventListener("click", doSpeak);
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") doSpeak();
+      });
+    });
+
+    // Wire delete buttons
+    container.querySelectorAll(".btn-delete-account[data-delete-email]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const email = btn.getAttribute("data-delete-email");
+        if (!email || !confirm(`Удалить профиль ${email}?`)) return;
+        haptic(20);
+        try {
+          const delRes = await apiCall("/api/antigravity/account/delete", "POST", { email });
+          if (delRes && delRes.status === "ok") {
+            showToast(`🗑️ Профиль ${email} удален.`);
+            await fetchAccounts();
+          }
+        } catch (e) {
+          showToast(`Ошибка: ${e.message}`);
+        }
+      });
+    });
+
+  } catch (e) {
+    container.innerHTML = `<div style="font-size: 13px; color: #EF4444; padding: 8px;">Ошибка подключения к серверу</div>`;
+  }
+}
+
+function initAccountManager() {
+  const btnRefresh = document.getElementById("btnRefreshAccounts");
+  if (btnRefresh) {
+    btnRefresh.addEventListener("click", () => {
+      haptic(15);
+      fetchAccounts();
     });
   }
 
-  document.querySelectorAll(".tts-preset-chip[data-text]").forEach(chip => {
-    chip.addEventListener("click", async () => {
-      const text = chip.getAttribute("data-text");
-      if (!text) return;
+  const btnAdd = document.getElementById("btnAddGoogleAccount");
+  if (btnAdd) {
+    btnAdd.addEventListener("click", async () => {
       haptic(20);
       try {
-        await apiCall("/api/pc/speak", "POST", { text });
-        showToast(`🗣️ Сказано: "${text}"`);
-      } catch (e) {
-        showToast("Ошибка озвучки");
-      }
-    });
-  });
-}
-
-// --- 10. VOLUME PRESETS ---
-function initVolumePresets() {
-  document.querySelectorAll(".vol-preset-chip[data-vol]").forEach(chip => {
-    chip.addEventListener("click", async () => {
-      const vol = parseInt(chip.getAttribute("data-vol"), 10);
-      haptic(20);
-      try {
-        if (vol === 0) {
-          await triggerAction("volume_mute");
-          showToast("🔇 Звук выключен (Mute)");
+        const res = await apiCall("/api/antigravity/auth/url", "GET");
+        if (res && res.url) {
+          showToast("🌐 Открываем Google OAuth...");
+          window.open(res.url, "_blank");
         } else {
-          const steps = Math.round(vol / 10);
-          await triggerAction("volume_up", { steps });
-          showToast(`🔉 Громкость: ~${vol}%`);
+          showToast("Не удалось получить OAuth URL");
         }
       } catch (e) {
-        showToast("Ошибка изменения громкости");
+        showToast("Ошибка: " + e.message);
       }
     });
+  }
+
+  const btnRestart = document.getElementById("btnRestartAntigravity");
+  if (btnRestart) {
+    btnRestart.addEventListener("click", async () => {
+      if (!confirm("Перезапустить процесс Antigravity на ПК?")) return;
+      haptic(30);
+      btnRestart.disabled = true;
+      try {
+        const res = await apiCall("/api/antigravity/launch", "POST", {});
+        showToast(res?.message || "🔄 Запрос на перезапуск отправлен");
+      } catch (e) {
+        showToast("Ошибка перезапуска: " + e.message);
+      } finally {
+        setTimeout(() => { btnRestart.disabled = false; }, 3000);
+      }
+    });
+  }
+
+  const btnToggleManual = document.getElementById("btnToggleManualCode");
+  const manualBox = document.getElementById("manualCodeBox");
+  if (btnToggleManual && manualBox) {
+    btnToggleManual.addEventListener("click", () => {
+      manualBox.style.display = manualBox.style.display === "none" ? "block" : "none";
+    });
+  }
+
+  const btnSubmitManual = document.getElementById("btnSubmitManualCode");
+  const inputManual = document.getElementById("inputManualAuthCode");
+  if (btnSubmitManual && inputManual) {
+    btnSubmitManual.addEventListener("click", async () => {
+      const code = inputManual.value.trim();
+      if (!code) return;
+      haptic(25);
+      btnSubmitManual.textContent = "...";
+      btnSubmitManual.disabled = true;
+      try {
+        const res = await apiCall("/api/antigravity/account/code", "POST", { code });
+        if (res && res.status === "ok") {
+          showToast(`🎉 Аккаунт ${res.email} успешно добавлен!`);
+          inputManual.value = "";
+          manualBox.style.display = "none";
+          await fetchAccounts();
+        } else {
+          showToast(`Ошибка: ${res?.message || "Неверный код"}`);
+        }
+      } catch (e) {
+        showToast("Ошибка: " + e.message);
+      } finally {
+        btnSubmitManual.textContent = "ОК";
+        btnSubmitManual.disabled = false;
+      }
+    });
+  }
+
+  // Initial load
+  fetchAccounts();
+}
+
+// --- 10. SERVER LIVE LOGS VIEWER ---
+function initServerLogs() {
+  const btnRefresh = document.getElementById("btnRefreshServerLogs");
+  const output = document.getElementById("serverLogsOutput");
+  if (!btnRefresh || !output) return;
+
+  const loadLogs = async () => {
+    haptic(15);
+    btnRefresh.classList.add("spinning");
+    try {
+      const res = await apiCall("/api/server/logs?limit=40", "GET");
+      if (res && res.status === "ok" && res.lines) {
+        output.textContent = res.lines.join("\n");
+        output.scrollTop = output.scrollHeight;
+      } else {
+        output.textContent = "Не удалось загрузить логи.";
+      }
+    } catch (e) {
+      output.textContent = "Ошибка получения логов: " + e.message;
+    } finally {
+      setTimeout(() => btnRefresh.classList.remove("spinning"), 400);
+    }
+  };
+
+  btnRefresh.addEventListener("click", loadLogs);
+}
+
+// --- 10.1 SCREENSHOT HD DOWNLOAD ---
+function initScreenshotDownload() {
+  const btn = document.getElementById("btnDownloadScreenSnapshot");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    haptic(20);
+    const link = document.createElement("a");
+    link.href = `/api/pc/screenshot?t=${Date.now()}`;
+    link.download = `pc_screenshot_${Date.now()}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast("📸 Скриншот скачан в галерею/загрузки");
   });
 }
 
@@ -2888,8 +3048,9 @@ window.addEventListener("DOMContentLoaded", () => {
   setupEvents();
   initCustomMacros();
   initCaffeineControls();
-  initTextToSpeech();
-  initVolumePresets();
+  initAccountManager();
+  initServerLogs();
+  initScreenshotDownload();
   initUrlPresets();
   initFileUpload();
   initClipboardSync();

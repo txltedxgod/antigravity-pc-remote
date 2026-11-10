@@ -263,6 +263,61 @@
 
     <!-- TAB 2: PC Controls -->
     <section class="tab-pane" id="tabControls">
+      <!-- Antigravity Accounts & Quota Vault Card -->
+      <div class="monochrome-card">
+        <div class="card-title-row space-between">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div class="card-title-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                <circle cx="12" cy="7" r="4"></circle>
+              </svg>
+            </div>
+            <span class="card-heading">Аккаунты Antigravity (Квоты и Лимиты)</span>
+          </div>
+          <button class="chip-action" id="btnRefreshAccounts" type="button" title="Обновить список аккаунтов">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+            <span>Обновить</span>
+          </button>
+        </div>
+
+        <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.4;">
+          Закончились лимиты? Переключи аккаунт в 1 клик или войди с телефона — Antigravity на ПК сразу подхватит новый профиль без потери данных.
+        </div>
+
+        <!-- Saved Accounts List Container -->
+        <div class="accounts-vault-list" id="accountsVaultList" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px;">
+          <div style="font-size: 13px; color: var(--text-muted); text-align: center; padding: 12px;">Загрузка аккаунтов...</div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button class="btn btn-primary" id="btnAddGoogleAccount" type="button" style="flex: 1; min-width: 160px; font-size: 13px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            <span>+ Войти в Google</span>
+          </button>
+          <button class="btn btn-secondary" id="btnRestartAntigravity" type="button" style="font-size: 13px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+            <span>Перезапустить IDE</span>
+          </button>
+        </div>
+
+        <!-- Manual OAuth Code Collapsible Box -->
+        <div style="margin-top: 10px; border-top: 1px solid var(--border-subtle); padding-top: 10px;">
+          <button class="btn-text-link" id="btnToggleManualCode" type="button" style="font-size: 12px; color: var(--text-muted); background: none; border: none; cursor: pointer; padding: 0;">
+            🔗 Ввести код авторизации вручную (если нет прямого редиректа)
+          </button>
+          <div id="manualCodeBox" style="display: none; margin-top: 8px;">
+            <div style="display: flex; gap: 6px;">
+              <input type="text" id="inputManualAuthCode" class="custom-input" placeholder="Вставьте код (4/0A...)" style="flex: 1; font-size: 12px;" />
+              <button class="btn btn-primary-compact" id="btnSubmitManualCode" type="button" style="font-size: 12px;">ОК</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Volume Card -->
       <div class="monochrome-card">
         <div class="card-title-row">
@@ -297,13 +352,6 @@
             </svg>
             <span>+10%</span>
           </button>
-        </div>
-        <div class="cmd-presets-row" style="margin-top: 8px;">
-          <button class="vol-preset-chip" data-vol="0">🔇 0%</button>
-          <button class="vol-preset-chip" data-vol="25">🔉 25%</button>
-          <button class="vol-preset-chip" data-vol="50">🔉 50%</button>
-          <button class="vol-preset-chip" data-vol="75">🔊 75%</button>
-          <button class="vol-preset-chip" data-vol="100">🔊 100%</button>
         </div>
       </div>
 
@@ -549,34 +597,29 @@
         </div>
       </div>
 
-      <!-- Text-to-Speech Voice Card -->
+      <!-- Server Live Logs Card -->
       <div class="monochrome-card">
         <div class="card-title-row space-between">
           <div style="display: flex; align-items: center; gap: 8px;">
             <div class="card-title-icon">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                <line x1="12" y1="19" x2="12" y2="23"/>
-                <line x1="8" y1="23" x2="16" y2="23"/>
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+                <polyline points="10 9 9 9 8 9"></polyline>
               </svg>
             </div>
-            <span class="card-heading">Голос ноутбука (Text-to-Speech)</span>
+            <span class="card-heading">Логи сервера (server.log)</span>
           </div>
-          <span class="chip-label" id="ttsStatus">SAPI Voice</span>
-        </div>
-        <div class="cmd-presets-row" style="margin-bottom: 8px;">
-          <button class="tts-preset-chip" data-text="Привет из солнечной Грузии!">🇬🇪 Из Грузии</button>
-          <button class="tts-preset-chip" data-text="Отойди от ноутбука, идёт удаленная работа!">🛑 Отойди</button>
-          <button class="tts-preset-chip" data-text="Я на связи, всё под контролем!">⚡ На связи</button>
-          <button class="tts-preset-chip" data-text="Сборка и тесты успешно завершены!">🧪 Тесты OK</button>
-        </div>
-        <div class="search-input-row">
-          <input type="text" id="ttsInput" class="custom-input" placeholder="Текст для озвучки через динамики..." />
-          <button class="btn btn-primary-compact" id="btnSpeakText" type="button">
-            <span>Сказать</span>
+          <button class="chip-action" id="btnRefreshServerLogs" type="button" title="Обновить журнал логов">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+            <span>Обновить</span>
           </button>
         </div>
+        <pre class="cmd-console-output" id="serverLogsOutput" style="max-height: 180px; margin-top: 6px;">Нажмите «Обновить» для чтения последних логов сервера</pre>
       </div>
 
       <!-- Hotkeys & Window Actions Card -->
@@ -1012,12 +1055,20 @@
             </div>
             <span class="card-heading">Экран ПК (Live Preview)</span>
           </div>
-          <button class="chip-action" id="btnRefreshScreenSnapshot" title="Обновить снимок экрана">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
-            </svg>
-            <span>Снимок</span>
-          </button>
+          <div style="display: flex; gap: 6px;">
+            <button class="chip-action" id="btnDownloadScreenSnapshot" title="Скачать снимок экрана">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+              </svg>
+              <span>HD</span>
+            </button>
+            <button class="chip-action" id="btnRefreshScreenSnapshot" title="Обновить снимок экрана">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+              </svg>
+              <span>Снимок</span>
+            </button>
+          </div>
         </div>
         <div class="screen-preview-container" id="screenPreviewBox" title="Тапните для просмотра во весь экран">
           <div class="screen-preview-placeholder" id="screenPlaceholder">
