@@ -98,6 +98,20 @@ async def handle_pc_status(request):
     cpu = win32_controls.get_cpu_stats()
     win_title = win32_controls.get_foreground_window_title()
 
+    # Battery stats for laptop remote management
+    battery_info = None
+    try:
+        import psutil
+        b = psutil.sensors_battery()
+        if b is not None:
+            battery_info = {
+                "percent": int(b.percent),
+                "power_plugged": bool(b.power_plugged),
+                "secs_left": int(b.secsleft) if b.secsleft and b.secsleft > 0 else None
+            }
+    except Exception:
+        pass
+
     # Check SteamGhost status
     steamghost_running = False
     try:
@@ -111,6 +125,7 @@ async def handle_pc_status(request):
         "status": "ok",
         "cpu_pct": cpu,
         "memory": mem,
+        "battery": battery_info,
         "active_window": win_title,
         "steamghost_running": steamghost_running,
         "lan_ip": get_lan_ip(),
@@ -217,6 +232,39 @@ async def handle_pc_action(request):
         return json_response({"status": "ok" if success else "error", "hwnd": hwnd})
 
     return json_response({"status": "error", "message": f"Unknown action: {action}"}, status=400)
+
+async def handle_pc_cmd(request):
+    """Executes a PowerShell / shell command on the host PC and returns output."""
+    try:
+        body = await request.json()
+    except Exception:
+        return json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+
+    cmd = (body.get("command") or "").strip()
+    if not cmd:
+        return json_response({"status": "error", "message": "Command is empty"}, status=400)
+
+    try:
+        import subprocess
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=15.0
+        )
+        output = proc.stdout or ""
+        if proc.stderr:
+            output += ("\n[STDERR]\n" + proc.stderr if output else proc.stderr)
+        return json_response({
+            "status": "ok",
+            "exit_code": proc.returncode,
+            "output": output or "(Команда выполнена успешно, вывод пуст)"
+        })
+    except subprocess.TimeoutExpired:
+        return json_response({"status": "error", "message": "Таймаут выполнения команды (15 сек)"}, status=504)
+    except Exception as e:
+        return json_response({"status": "error", "message": str(e)}, status=500)
 
 async def handle_pc_windows(request):
     windows = win32_controls.get_active_windows()
@@ -381,6 +429,7 @@ def create_app():
     app.router.add_get("/api/pc/screenshot", handle_pc_screenshot)
     app.router.add_get("/api/pc/windows", handle_pc_windows)
     app.router.add_post("/api/pc/action", handle_pc_action)
+    app.router.add_post("/api/pc/cmd", handle_pc_cmd)
     app.router.add_get("/api/clipboard", handle_get_clipboard)
     app.router.add_post("/api/clipboard", handle_set_clipboard)
     app.router.add_get("/api/antigravity/status", handle_antigravity_status)

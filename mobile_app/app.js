@@ -716,11 +716,60 @@ function stopVoiceInput() {
   }
 }
 
+// Battery & Power State Display
+function updateBatteryDisplay(battery) {
+  if (!battery) return;
+  const pct = battery.percent;
+  const plugged = battery.power_plugged;
+
+  // Header badge
+  const headerBattery = document.getElementById("headerBattery");
+  const headerIcon = document.getElementById("headerBatteryIcon");
+  const headerVal = document.getElementById("headerBatteryVal");
+  if (headerBattery && headerIcon && headerVal) {
+    headerBattery.style.display = "inline-flex";
+    headerIcon.textContent = plugged ? "⚡" : (pct < 25 ? "🪫" : "🔋");
+    headerVal.textContent = `${pct}%`;
+    if (!plugged) {
+      headerBattery.style.borderColor = pct < 25 ? "rgba(239, 68, 68, 0.6)" : "rgba(245, 158, 11, 0.6)";
+      headerBattery.style.color = pct < 25 ? "#EF4444" : "#F59E0B";
+    } else {
+      headerBattery.style.borderColor = "var(--border-subtle)";
+      headerBattery.style.color = "var(--text-primary)";
+    }
+  }
+
+  // Monitor tile
+  const bStat = document.getElementById("batteryStat");
+  const bFill = document.getElementById("batteryFill");
+  const bStatus = document.getElementById("batteryStatus");
+  const bDetail = document.getElementById("batteryDetail");
+  if (bStat) bStat.textContent = `${pct}%`;
+  if (bFill) {
+    bFill.style.width = `${Math.min(pct, 100)}%`;
+    bFill.style.backgroundColor = plugged ? "#10B981" : (pct < 25 ? "#EF4444" : "#F59E0B");
+  }
+  if (bStatus) {
+    bStatus.textContent = plugged ? "⚡ Подключено к сети 220V" : "⚠️ Работа от батареи (АКБ)";
+    bStatus.style.color = plugged ? "#10B981" : "#EF4444";
+  }
+  if (bDetail) {
+    bDetail.textContent = plugged
+      ? "Питание от розетки, отключение исключено"
+      : `Внимание: провод отключен! Заряд: ${pct}%${battery.secs_left ? ` (~${Math.round(battery.secs_left / 60)} мин)` : ""}`;
+  }
+}
+
 // 5. Hardware Telemetry Gatherer
 async function pollTelemetry() {
   try {
     const data = await apiCall("/api/pc/telemetry");
     if (!data || data.status !== "ok") return;
+
+    // Battery
+    if (data.battery) {
+      updateBatteryDisplay(data.battery);
+    }
 
     // CPU
     const cpuStat = document.getElementById("cpuStat");
@@ -854,11 +903,17 @@ async function fetchChat(autoScroll = true) {
   const statusLabel = document.getElementById("agentStatusLabel");
   if (!feed) return;
 
+  const targetConvId = currentConvId;
   try {
-    const params = currentConvId ? `?conversation_id=${encodeURIComponent(currentConvId)}` : "";
+    const params = targetConvId ? `?conversation_id=${encodeURIComponent(targetConvId)}` : "";
     const res = await apiCall(`/api/antigravity/chat${params}`);
     if (!res || res.status !== "ok") {
       if (activityBanner && !isSendingPrompt) activityBanner.style.display = "none";
+      return;
+    }
+
+    // Race condition guard: ignore stale fetch if conversation changed in the meantime
+    if (targetConvId && currentConvId && targetConvId !== currentConvId) {
       return;
     }
 
@@ -1159,11 +1214,19 @@ function createDrawerItem(c) {
   const item = document.createElement("button");
   const isActive = (c.id === currentConvId) || (!currentConvId && c.isCurrent);
   const isPinned = !!c.isPinned;
-  item.className = "drawer-item" + (isActive ? " active" : "") + (isPinned ? " pinned" : "");
+  const isRunning = !!c.isRunning;
+  item.className = "drawer-item" + (isActive ? " active" : "") + (isPinned ? " pinned" : "") + (isRunning ? " running" : "");
   item.dataset.id = c.id;
 
   const timeLabel = formatConvTime(c.mtime);
   const safeTitle = escapeHtml(c.title || `Диалог ${c.id.substring(0, 8)}`);
+
+  const runningBadgeSvg = `
+    <span class="drawer-item-running-badge" title="Агент выполняет задачу">
+      <span class="pulse-dot"></span>
+      <span>Работает</span>
+    </span>
+  `;
 
   const pinIconSvg = `
     <svg class="drawer-item-pin-badge" width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
@@ -1183,7 +1246,7 @@ function createDrawerItem(c) {
       <span class="drawer-item-title">${safeTitle}</span>
     </div>
     <div class="drawer-item-actions">
-      ${timeLabel ? `<span class="drawer-item-time">${timeLabel}</span>` : ""}
+      ${isRunning ? runningBadgeSvg : (timeLabel ? `<span class="drawer-item-time">${timeLabel}</span>` : "")}
       <button class="btn-pin-toggle ${isPinned ? "pinned" : ""}" title="${isPinned ? "Открепить" : "Закрепить"}" type="button">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="${isPinned ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2">
           <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/>
@@ -1297,6 +1360,10 @@ async function switchConversation(convId, optTitle) {
 
   const feed = document.getElementById("chatFeed");
   const emptyState = document.getElementById("chatEmptyState");
+  const activityBanner = document.getElementById("agentActivityBanner");
+  if (activityBanner) activityBanner.style.display = "none";
+  currentAgentStatus = "idle";
+  updateSendButtonState();
   if (feed) feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
   if (emptyState) emptyState.style.display = "none";
 
@@ -1373,6 +1440,11 @@ async function pollStatus() {
     if (pcStatus.mac_address) {
       config.mac = pcStatus.mac_address;
       localStorage.setItem("pc_remote_mac", pcStatus.mac_address);
+    }
+
+    // Battery & Power State
+    if (pcStatus.battery) {
+      updateBatteryDisplay(pcStatus.battery);
     }
 
     // Telemetry Gauges
@@ -1998,6 +2070,86 @@ function setupEvents() {
       showToast("Настройки сохранены. Проверка связи...");
       pollStatus();
       fetchChat(true);
+    });
+  }
+
+  // Remote Terminal Initialization
+  initRemoteTerminal();
+}
+
+// Remote Terminal Execution
+function initRemoteTerminal() {
+  const btnRun = document.getElementById("btnRunCmd");
+  const input = document.getElementById("cmdInput");
+  const outWrapper = document.getElementById("cmdOutputWrapper");
+  const outPre = document.getElementById("cmdOutput");
+  const statusBadge = document.getElementById("cmdStatusBadge");
+  const btnCopy = document.getElementById("btnCopyCmdOutput");
+  const btnClear = document.getElementById("btnClearCmdOutput");
+
+  if (!btnRun || !input) return;
+
+  const runCommand = async () => {
+    const cmd = input.value.trim();
+    if (!cmd) return;
+    haptic(30);
+    btnRun.disabled = true;
+    if (statusBadge) {
+      statusBadge.style.display = "inline-block";
+      statusBadge.textContent = "Выполняется...";
+      statusBadge.style.color = "var(--text-muted)";
+    }
+    if (outWrapper) outWrapper.style.display = "block";
+    if (outPre) outPre.textContent = "Запуск команды...";
+
+    try {
+      const res = await apiCall("/api/pc/cmd", "POST", { command: cmd });
+      if (res && res.status === "ok") {
+        if (statusBadge) {
+          statusBadge.textContent = `Код: ${res.exit_code}`;
+          statusBadge.style.color = res.exit_code === 0 ? "var(--success)" : "var(--danger)";
+        }
+        if (outPre) outPre.textContent = res.output;
+      } else {
+        if (statusBadge) {
+          statusBadge.textContent = "Ошибка";
+          statusBadge.style.color = "var(--danger)";
+        }
+        if (outPre) outPre.textContent = res?.message || "Неизвестная ошибка";
+      }
+    } catch (e) {
+      if (statusBadge) {
+        statusBadge.textContent = "Сбой сети";
+        statusBadge.style.color = "var(--danger)";
+      }
+      if (outPre) outPre.textContent = "Ошибка связи: " + e.message;
+    } finally {
+      btnRun.disabled = false;
+    }
+  };
+
+  btnRun.addEventListener("click", runCommand);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      runCommand();
+    }
+  });
+
+  if (btnCopy && outPre) {
+    btnCopy.addEventListener("click", () => {
+      if (!outPre.textContent) return;
+      navigator.clipboard.writeText(outPre.textContent).then(() => {
+        showToast("✓ Вывод скопирован в буфер");
+      }).catch(() => {});
+    });
+  }
+
+  if (btnClear && outPre && outWrapper && statusBadge) {
+    btnClear.addEventListener("click", () => {
+      outPre.textContent = "";
+      outWrapper.style.display = "none";
+      statusBadge.style.display = "none";
     });
   }
 }

@@ -2016,3 +2016,93 @@ html, body {
   transform: scale(0.97);
   opacity: 0.85;
 }
+
+/* Running conversation indicator in Drawer */
+.drawer-item-running-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  border-radius: 12px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #34D399;
+}
+
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10B981;
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.6);
+  animation: pulseGlow 1.4s ease-in-out infinite;
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.75);
+  }
+}
+
+/* Header Battery */
+.header-battery {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: 12px;
+  background: #18181B;
+  border: 1px solid #27272A;
+  color: #F4F4F5;
+  transition: all 0.2s ease;
+}
+
+/* Remote Terminal Console */
+.mono-font {
+  font-family: 'Consolas', 'Courier New', monospace !important;
+}
+
+.cmd-console-output {
+  background: #09090B;
+  border: 1px solid #27272A;
+  border-radius: 8px;
+  padding: 10px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #34D399;
+  max-height: 220px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+}
+
+.btn-micro {
+  background: #18181B;
+  border: 1px solid #27272A;
+  border-radius: 6px;
+  color: #A1A1AA;
+  font-size: 10px;
+  padding: 2px 7px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.btn-micro:hover {
+  background: #27272A;
+  color: #F4F4F5;
+}
+
+.btn-micro:active {
+  transform: scale(0.96);
+}

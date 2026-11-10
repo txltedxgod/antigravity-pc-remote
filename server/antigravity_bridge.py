@@ -393,19 +393,23 @@ async def toggle_conversation_pin(conv_id, pinned=None, port=None):
     }
 
 async def get_conversations_list(port=None):
-    """Retrieves all active and historical conversations from brain/, marking pinned ones."""
+    """Retrieves all active and historical conversations from brain/, marking pinned and currently running ones."""
     active_id = await get_active_conversation_id(port)
     pinned_ids = await get_pinned_conversation_ids(port)
+    target = await find_antigravity_target(port)
+    running_ids = await get_running_conversation_ids_cdp(target=target, port=port)
     convs = get_all_brain_conversations()
     for c in convs:
         c["isCurrent"] = (c["id"] == active_id)
         c["isPinned"] = (c["id"] in pinned_ids)
+        c["isRunning"] = (c["id"] in running_ids)
 
     return {
         "status": "ok",
         "active_id": active_id,
         "total": len(convs),
         "pinned_count": len([c for c in convs if c.get("isPinned")]),
+        "running_count": len(running_ids),
         "conversations": convs
     }
 
@@ -733,56 +737,65 @@ def parse_conversation_history(conv_id, limit=50):
             "messages": []
         }
 
-async def check_agent_active_status_cdp(conv_id=None, target=None, port=None):
+async def get_running_conversation_ids_cdp(target=None, port=None) -> set:
     """
-    Directly queries Antigravity DOM via Chrome DevTools Protocol:
-    1. If conv_id provided: checks if the conversation row has button[aria-label="Stop execution"]
-    2. Or if active canvas has button[aria-label="Stop execution"]
-    Returns (is_running: bool, current_action: str) based on actual live DOM.
+    Directly queries Antigravity DOM via Chrome DevTools Protocol to find
+    all conversation IDs that currently have an active Stop button.
     """
     try:
         if not target:
             target = await find_antigravity_target(port)
         if not target:
-            return False, ""
+            return set()
         ws_url = target.get("webSocketDebuggerUrl")
         if not ws_url:
-            return False, ""
-        cid = conv_id or ""
+            return set()
         async with aiohttp.ClientSession() as session:
             async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=1.2)) as ws:
-                js = f"""
-                (() => {{
-                    const convId = '{cid}';
-                    if (convId) {{
-                        const row = document.querySelector(`[data-cascade-id="${{convId}}"], [data-conversation-id="${{convId}}"]`);
-                        if (row) {{
-                            const stopInRow = row.querySelector('button[aria-label="Stop execution"], [aria-label*="Stop"]');
-                            if (stopInRow) return {{ isRunning: true, source: 'sidebar_row' }};
-                        }}
-                    }}
-                    const canvasStop = document.querySelector('button[aria-label="Stop execution"], button[title="Stop execution"]');
-                    if (canvasStop) return {{ isRunning: true, source: 'canvas' }};
-
-                    return {{ isRunning: false, source: 'none' }};
-                }})()
+                js = """
+                (() => {
+                    const running = new Set();
+                    const stopBtns = document.querySelectorAll('button[aria-label*="Stop" i], button[title*="Stop" i]');
+                    for (const btn of stopBtns) {
+                        const row = btn.closest('[data-cascade-id], [data-conversation-id]');
+                        if (row) {
+                            const cid = row.getAttribute('data-cascade-id') || row.getAttribute('data-conversation-id');
+                            if (cid) running.add(cid);
+                        } else {
+                            const m = (window.location.href || '').match(/\\/c\\/([a-zA-Z0-9_-]+)/);
+                            if (m && m[1]) running.add(m[1]);
+                        }
+                    }
+                    return Array.from(running);
+                })()
                 """
                 await ws.send_str(json.dumps({
-                    "id": 401,
+                    "id": 405,
                     "method": "Runtime.evaluate",
                     "params": {"expression": js, "returnByValue": True}
                 }))
                 while True:
                     r = await ws.receive_json()
-                    if r.get("id") == 401:
-                        val = r.get("result", {}).get("result", {}).get("value", {})
-                        return val.get("isRunning", False), ""
+                    if r.get("id") == 405:
+                        val = r.get("result", {}).get("result", {}).get("value", [])
+                        return set(val) if isinstance(val, list) else set()
     except Exception as e:
-        logger.debug(f"CDP status check failed: {e}")
+        logger.debug(f"CDP running conversations check failed: {e}")
+        return set()
+
+async def check_agent_active_status_cdp(conv_id=None, target=None, port=None):
+    """
+    Directly queries Antigravity DOM via Chrome DevTools Protocol:
+    Checks if the specified conversation ID has an active Stop button.
+    Returns (is_running: bool, current_action: str) strictly scoped to conv_id.
+    """
+    if not conv_id or conv_id == "new":
         return False, ""
+    running_ids = await get_running_conversation_ids_cdp(target=target, port=port)
+    return (conv_id in running_ids), ""
 
 async def get_conversation_chat(conv_id=None, limit=50, port=None):
-    """Asynchronously retrieves chat messages and truthful real-time status for the conversation."""
+    """Asynchronously retrieves chat messages and truthful real-time status strictly for the requested conversation."""
     target = await find_antigravity_target(port)
     if not conv_id or conv_id == "active":
         if target:
@@ -804,13 +817,16 @@ async def get_conversation_chat(conv_id=None, limit=50, port=None):
         }
 
     chat_data = parse_conversation_history(conv_id, limit=limit)
-    is_live_running, _ = await check_agent_active_status_cdp(conv_id=conv_id, target=target, port=port)
+    running_ids = await get_running_conversation_ids_cdp(target=target, port=port)
+    is_live_running = (conv_id in running_ids)
+
     if is_live_running:
         if chat_data.get("agent_status") == "idle":
             chat_data["agent_status"] = "executing"
             if not chat_data.get("current_action"):
                 chat_data["current_action"] = "Выполняет задачу..."
     else:
+        # If this dialog does NOT have a live stop button, it is genuinely idle
         chat_data["agent_status"] = "idle"
         chat_data["current_action"] = ""
 
@@ -1086,21 +1102,26 @@ async def stop_agent_execution(conv_id=None, port=None):
                         }}
                     }}
 
-                    // 2. Check the active canvas stop button
-                    const canvasStop = document.querySelector('button[aria-label="Stop execution"], button[title="Stop execution"]');
-                    if (canvasStop) {{
-                        canvasStop.click();
-                        return {{ clicked: true, method: 'canvas', convId }};
+                    // 2. Check the active canvas stop button (only if canvas is for this convId or convId is empty)
+                    const isCanvasForConv = !convId || (window.location.href || '').includes('/c/' + convId);
+                    if (isCanvasForConv) {{
+                        const canvasStop = document.querySelector('button[aria-label="Stop execution"], button[title="Stop execution"]');
+                        if (canvasStop) {{
+                            canvasStop.click();
+                            return {{ clicked: true, method: 'canvas', convId }};
+                        }}
                     }}
 
-                    // 3. Any stop button in the document
-                    const allStops = Array.from(document.querySelectorAll('button[aria-label="Stop execution"], [aria-label*="Stop"]'));
-                    if (allStops.length > 0) {{
-                        allStops[allStops.length - 1].click();
-                        return {{ clicked: true, method: 'fallback_any', convId }};
+                    // 3. Fallback only if convId is NOT specified
+                    if (!convId) {{
+                        const allStops = Array.from(document.querySelectorAll('button[aria-label="Stop execution"], button[title="Stop execution"]'));
+                        if (allStops.length > 0) {{
+                            allStops[allStops.length - 1].click();
+                            return {{ clicked: true, method: 'fallback_any' }};
+                        }}
                     }}
 
-                    return {{ clicked: false, message: "No active stop button found in Antigravity" }};
+                    return {{ clicked: false, message: "No active stop button found for conversation " + convId }};
                 }})()
                 """
                 await ws.send_str(json.dumps({
@@ -1191,6 +1212,18 @@ def get_pc_telemetry():
     except Exception:
         pass
 
+    battery_info = None
+    try:
+        b = psutil.sensors_battery()
+        if b is not None:
+            battery_info = {
+                "percent": int(b.percent),
+                "power_plugged": bool(b.power_plugged),
+                "secs_left": int(b.secsleft) if b.secsleft and b.secsleft > 0 else None
+            }
+    except Exception:
+        pass
+
     return {
         "status": "ok",
         "cpu": {
@@ -1207,5 +1240,6 @@ def get_pc_telemetry():
             "total_gb": round(d.total / (1024**3), 1),
             "percent": d.percent
         },
-        "gpu": gpu_info
+        "gpu": gpu_info,
+        "battery": battery_info
     }
