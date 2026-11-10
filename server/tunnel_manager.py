@@ -92,10 +92,12 @@ def start_tunnel(local_port=8765):
                 )
 
                 for line in iter(_tunnel_process.stdout.readline, ""):
-                    # Look for trycloudflare.com URL
+                    # Look for trycloudflare.com URL, excluding Cloudflare API endpoint
                     m = re.search(r"https://[a-zA-Z0-9\-]+\.trycloudflare\.com", line)
                     if m:
                         url = m.group(0)
+                        if "api.trycloudflare.com" in url:
+                            continue
                         with _lock:
                             _current_url = url
                         try:

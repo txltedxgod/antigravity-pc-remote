@@ -13,7 +13,7 @@ let config = {
 
 let isConnected = false;
 let activeTab = "tabAntigravity";
-let currentConvId = "";
+let currentConvId = localStorage.getItem("pc_remote_active_conv_id") || "037cb609-c730-4833-9a14-59662d84e93c";
 let allConversations = [];
 let lastMessageCount = 0;
 let isSwitchingConv = false;
@@ -35,30 +35,52 @@ async function discoverCloudUrl(force = false) {
   if (isDiscoveringCloud) return cloudUrl;
   isDiscoveringCloud = true;
   try {
-    const res = await fetch(`https://api.github.com/repos/txltedxgod/antigravity-pc-remote/contents/server/tunnel_url.txt?t=${Date.now()}`, {
-      headers: { "Accept": "application/vnd.github.v3+json" }
-    });
-    if (!res.ok) return cloudUrl;
-    const data = await res.json();
-    if (data && data.content) {
-      const decoded = atob(data.content.replace(/\s/g, "")).trim();
-      if (decoded.startsWith("https://") && decoded.includes("trycloudflare.com")) {
-        const cleanDecoded = decoded.replace(/\/+$/, "");
-        cloudUrl = cleanDecoded;
-        localStorage.setItem("pc_remote_cloud_url", cleanDecoded);
+    let cleanDecoded = "";
+    // 1. Try raw githubusercontent (no rate limits, fastest)
+    try {
+      const rawRes = await fetch(`https://raw.githubusercontent.com/txltedxgod/antigravity-pc-remote/main/server/tunnel_url.txt?t=${Date.now()}`);
+      if (rawRes.ok) {
+        const text = (await rawRes.text()).trim();
+        if (text.startsWith("https://") && text.includes("trycloudflare.com") && !text.includes("api.trycloudflare.com")) {
+          cleanDecoded = text.replace(/\/+$/, "");
+        }
+      }
+    } catch (rawErr) {}
 
-        // Immediate migration: if stored host is a stale Cloudflare tunnel, update immediately!
-        if (config.host && (config.host.includes("trycloudflare.com") || force) && config.host !== cleanDecoded) {
+    // 2. Fallback to GitHub API if raw didn't return
+    if (!cleanDecoded) {
+      const res = await fetch(`https://api.github.com/repos/txltedxgod/antigravity-pc-remote/contents/server/tunnel_url.txt?t=${Date.now()}`, {
+        headers: { "Accept": "application/vnd.github.v3+json" }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.content) {
+          const decoded = atob(data.content.replace(/\s/g, "")).trim();
+          if (decoded.startsWith("https://") && decoded.includes("trycloudflare.com") && !decoded.includes("api.trycloudflare.com")) {
+            cleanDecoded = decoded.replace(/\/+$/, "");
+          }
+        }
+      }
+    }
+
+    if (cleanDecoded) {
+      cloudUrl = cleanDecoded;
+      localStorage.setItem("pc_remote_cloud_url", cleanDecoded);
+
+      // Immediate migration: if stored host is a stale or broken Cloudflare tunnel, update immediately!
+      const hostIsBroken = config.host && (config.host.includes("api.trycloudflare.com") || config.host.includes("trycloudflare.com"));
+      if (hostIsBroken || force || !config.host) {
+        if (config.host !== cleanDecoded) {
           console.log(`Auto-migrating host: ${config.host} -> ${cleanDecoded}`);
           config.host = cleanDecoded;
           localStorage.setItem("pc_remote_host", cleanDecoded);
           showToast("🌐 Адрес туннеля обновлен с GitHub!");
         }
-
-        const disp = document.getElementById("cloudUrlDisplay");
-        if (disp) disp.value = cleanDecoded;
-        return cleanDecoded;
       }
+
+      const disp = document.getElementById("cloudUrlDisplay");
+      if (disp) disp.value = cleanDecoded;
+      return cleanDecoded;
     }
   } catch (e) {
     console.error("Cloud discovery error:", e);
@@ -1404,6 +1426,7 @@ async function loadConversations() {
 
     if (!currentConvId && res.active_id) {
       currentConvId = res.active_id;
+      localStorage.setItem("pc_remote_active_conv_id", currentConvId);
     }
     updateActiveConvTitle(currentConvId);
 
@@ -1423,6 +1446,7 @@ async function switchConversation(convId, optTitle) {
   closeSidebar();
 
   currentConvId = convId;
+  localStorage.setItem("pc_remote_active_conv_id", convId);
   updateActiveConvTitle(convId, optTitle);
   isSwitchingConv = true;
   userIsAwaitingResponse = false;
@@ -1733,6 +1757,8 @@ function setupEvents() {
       } else if (targetId === "tabControls") {
         fetchActiveWindows();
         fetchProcesses();
+        fetchAccounts();
+        fetchQuotaAndPlan();
       } else if (targetId === "tabApps") {
         fetchActiveWindows();
         if (!currentFsPath) loadFsDirectory("");
@@ -2754,8 +2780,18 @@ async function fetchAccounts() {
         try {
           const switchRes = await apiCall("/api/antigravity/account/switch", "POST", { email });
           if (switchRes && switchRes.status === "ok") {
-            showToast(`✅ Аккаунт переключен на ${email}! IDE перезапущена.`);
-            await fetchAccounts();
+            showToast(`✅ Аккаунт переключен на ${email}! IDE синхронизируется...`);
+            btn.textContent = "Обновление...";
+            setTimeout(async () => {
+              await fetchAccounts();
+              await fetchQuotaAndPlan(true);
+              if (currentConvId) {
+                await apiCall("/api/antigravity/conversation/switch", "POST", { id: currentConvId }).catch(() => {});
+                await fetchChat(true);
+              }
+              btn.textContent = "Переключить";
+              btn.disabled = false;
+            }, 3000);
           } else {
             showToast(`Ошибка: ${switchRes?.message || "Не удалось переключить"}`);
             btn.textContent = "Переключить";
