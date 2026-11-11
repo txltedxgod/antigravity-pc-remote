@@ -5,17 +5,19 @@ and Win32 focus fallback to inject prompts, attach screenshot files, and monitor
 """
 
 import asyncio
-import aiohttp
+from collections import deque
+import ctypes
+from ctypes import wintypes
 import json
 import logging
-import ctypes
 import os
+from pathlib import Path
 import re
 import sqlite3
 import subprocess
 import time
-from pathlib import Path
-from ctypes import wintypes
+
+import aiohttp
 
 logger = logging.getLogger("AntigravityBridge")
 
@@ -27,6 +29,36 @@ ANTIGRAVITY_EXE = r"C:\Users\dev\AppData\Local\Programs\antigravity\Antigravity.
 DEVTOOLS_PORT_FILE = os.path.expandvars(r"%APPDATA%\Antigravity\DevToolsActivePort")
 BRAIN_DIR = Path(os.path.expandvars(r"%USERPROFILE%\.gemini\antigravity\brain"))
 ANTIGRAVITY_DIR = BRAIN_DIR.parent
+_CONV_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+def is_valid_conv_id(conv_id: str) -> bool:
+    """Validates conversation IDs to prevent path traversal and template injection."""
+    return bool(conv_id and isinstance(conv_id, str) and _CONV_ID_RE.match(conv_id))
+
+
+async def _cdp_call(ws, req_id: int, method: str, params=None, timeout: float = 3.0):
+    """Sends a CDP request and waits safely for the matching response ID with timeout and close handling."""
+    payload = {"id": req_id, "method": method}
+    if params is not None:
+        payload["params"] = params
+    await ws.send_str(json.dumps(payload))
+
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise asyncio.TimeoutError(f"CDP timeout waiting for id={req_id} ({method})")
+        msg = await asyncio.wait_for(ws.receive(), timeout=remaining)
+        if msg.type == aiohttp.WSMsgType.TEXT:
+            try:
+                data = json.loads(msg.data)
+            except Exception:
+                continue
+            if data.get("id") == req_id:
+                return data
+        elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+            raise ConnectionError(f"CDP WebSocket closed while waiting for id={req_id}")
 
 def get_active_cdp_port(fallback=DEFAULT_CDP_PORT):
     """Dynamically retrieves the active DevTools port from Electron's DevToolsActivePort file."""
@@ -40,36 +72,96 @@ def get_active_cdp_port(fallback=DEFAULT_CDP_PORT):
         logger.debug(f"Could not read DevToolsActivePort file: {e}")
     return fallback
 
+def get_current_desktop_name():
+    """Returns the Win32 desktop name of the current process thread (e.g. 'Default')."""
+    try:
+        hdesk = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
+        if hdesk:
+            buf = ctypes.create_unicode_buffer(256)
+            if user32.GetUserObjectInformationW(hdesk, 2, buf, 512, None):
+                return buf.value
+    except Exception:
+        pass
+    return ""
+
+def has_antigravity_window_on_default_desktop():
+    """Checks whether a visible Antigravity main window exists on the user's Default desktop."""
+    try:
+        hdesk = user32.OpenDesktopW("Default", 0, False, 0x01FF)
+        if not hdesk:
+            return False
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        found = [False]
+        def enum_cb(hwnd, lp):
+            if user32.IsWindowVisible(hwnd):
+                cls_buf = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(hwnd, cls_buf, 256)
+                if cls_buf.value == "Chrome_WidgetWin_1":
+                    txt_buf = ctypes.create_unicode_buffer(512)
+                    user32.GetWindowTextW(hwnd, txt_buf, 512)
+                    if "antigravity" in txt_buf.value.lower() or "launcher" in txt_buf.value.lower():
+                        found[0] = True
+                        return False
+            return True
+        user32.EnumDesktopWindows(hdesk, WNDENUMPROC(enum_cb), 0)
+        user32.CloseDesktop(hdesk)
+        return found[0]
+    except Exception:
+        return False
+
 def is_antigravity_running():
-    """Checks whether Antigravity main executable processes are currently active in the OS."""
+    """
+    Checks whether the real Antigravity Electron IDE main process is active.
+    Explicitly ignores orphaned sidecar_sdk / register_loader.js workers and crashpad helpers.
+    """
     try:
         import psutil
-        for p in psutil.process_iter(['name']):
+        for p in psutil.process_iter(['name', 'cmdline']):
             name = (p.info.get('name') or '').lower()
-            if name == "antigravity.exe" or ("antigravity" in name and "crashpad" not in name):
+            if name == "antigravity.exe":
+                cmd = " ".join(p.info.get('cmdline') or []).lower()
+                if any(ignore in cmd for ignore in ("sidecar_sdk", "register_loader.js", "main.mjs", "--type=", "crashpad")):
+                    continue
                 return True
     except Exception:
         try:
-            out = subprocess.check_output("tasklist", shell=True).decode("utf-8", errors="ignore")
+            no_win = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            out = subprocess.check_output(["tasklist"], creationflags=no_win).decode("utf-8", errors="ignore")
             if "antigravity.exe" in out.lower():
                 return True
         except Exception:
             pass
     return False
 
-def launch_antigravity(force=False):
-    """Launches Antigravity desktop executable detached from the server."""
+def _is_game_mode_silent() -> bool:
+    try:
+        import win32_controls
+        return win32_controls.is_game_mode_active()
+    except Exception:
+        return False
+
+def launch_antigravity(force=False, background=None):
+    """Launches Antigravity desktop executable (minimized/unfocused if Game Mode is active)."""
     if not force and is_antigravity_running():
         return True
     if os.path.exists(ANTIGRAVITY_EXE):
-        logger.info(f"Launching Antigravity executable (force={force}): {ANTIGRAVITY_EXE}")
+        if background is None:
+            background = _is_game_mode_silent()
+        cur_desk = get_current_desktop_name()
+        if cur_desk and cur_desk.lower() != "default":
+            logger.warning(f"Launching Antigravity from non-Default desktop '{cur_desk}' — window may not appear on Default desktop!")
+        logger.info(f"Launching Antigravity executable (force={force}, background={background}, desktop={cur_desk}): {ANTIGRAVITY_EXE}")
         exe_path = Path(ANTIGRAVITY_EXE)
         try:
             flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 7 if background else 1  # 7=SW_SHOWMINNOACTIVE (zero focus steal while gaming!), 1=SW_SHOWNORMAL
             subprocess.Popen(
                 [str(exe_path)],
                 cwd=str(exe_path.parent),
                 creationflags=flags,
+                startupinfo=si,
                 close_fds=True
             )
             return True
@@ -97,13 +189,12 @@ async def wait_for_chat_ui_ready(port=None, timeout=18):
         if target and target.get("webSocketDebuggerUrl"):
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.ws_connect(target["webSocketDebuggerUrl"], timeout=aiohttp.ClientTimeout(total=2.0)) as ws:
-                        await ws.send_str(json.dumps({
-                            "id": 901,
-                            "method": "Runtime.evaluate",
-                            "params": {"expression": check_js, "returnByValue": True}
-                        }))
-                        reply = await asyncio.wait_for(ws.receive_json(), timeout=1.5)
+                    async with session.ws_connect(target["webSocketDebuggerUrl"], timeout=aiohttp.ClientTimeout(total=2.5)) as ws:
+                        reply = await _cdp_call(
+                            ws, 901, "Runtime.evaluate",
+                            {"expression": check_js, "returnByValue": True},
+                            timeout=1.5
+                        )
                         if reply.get("result", {}).get("result", {}).get("value") is True:
                             return True
             except Exception:
@@ -136,13 +227,6 @@ async def ensure_antigravity_ready(timeout=30):
     logger.warning("Antigravity launch timed out waiting for DevTools endpoint.")
     return False, "timeout"
 
-async def get_active_conversation_id(port=None):
-    """Extracts the active conversation UUID from Antigravity's current CDP target URL."""
-    target = await find_antigravity_target(port)
-    if not target:
-        return None
-    m = re.search(r"/c/([a-f0-9\-]+)", target.get("url", ""))
-    return m.group(1) if m else None
 
 async def find_antigravity_target(port=None):
     """Finds the active Antigravity conversation tab via DevTools HTTP endpoints."""
@@ -173,7 +257,12 @@ async def find_antigravity_target(port=None):
     return None
 
 def focus_antigravity_window():
-    """Brings the Antigravity desktop window to foreground on user desktop."""
+    """Brings the Antigravity desktop window to foreground on user desktop (skipped during Game Mode)."""
+    if _is_game_mode_silent():
+        logger.info("[GameMode] Skipped focus_antigravity_window to keep game fullscreen")
+        return False
+    prev_desk = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
+    hdesk = None
     try:
         hdesk = user32.OpenDesktopW("default", 0, False, 0x01FF)
         if not hdesk:
@@ -203,9 +292,18 @@ def focus_antigravity_window():
             return True
     except Exception as e:
         logger.error(f"Error focusing window: {e}")
+    finally:
+        if prev_desk:
+            try:
+                user32.SetThreadDesktop(prev_desk)
+            except Exception:
+                pass
+        if hdesk:
+            try:
+                user32.CloseDesktop(hdesk)
+            except Exception:
+                pass
     return False
-
-import time
 
 _conv_cache = {
     "timestamp": 0,
@@ -333,7 +431,7 @@ async def get_pinned_conversation_ids(port=None):
             ws_url = target.get("webSocketDebuggerUrl")
             if ws_url:
                 async with aiohttp.ClientSession() as session:
-                    async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=1.2)) as ws:
+                    async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=2.0)) as ws:
                         js = """
                         (() => {
                             const pinned = [];
@@ -346,18 +444,10 @@ async def get_pinned_conversation_ids(port=None):
                             return pinned;
                         })()
                         """
-                        await ws.send_str(json.dumps({
-                            "id": 501,
-                            "method": "Runtime.evaluate",
-                            "params": {"expression": js, "returnByValue": True}
-                        }))
-                        while True:
-                            r = await ws.receive_json()
-                            if r.get("id") == 501:
-                                val = r.get("result", {}).get("result", {}).get("value", [])
-                                if isinstance(val, list):
-                                    cdp_pinned = set(val)
-                                break
+                        r = await _cdp_call(ws, 501, "Runtime.evaluate", {"expression": js, "returnByValue": True}, timeout=1.5)
+                        val = r.get("result", {}).get("result", {}).get("value", [])
+                        if isinstance(val, list):
+                            cdp_pinned = set(val)
     except Exception as e:
         logger.debug(f"Failed to get pinned IDs via CDP: {e}")
 
@@ -371,8 +461,8 @@ async def get_pinned_conversation_ids(port=None):
 
 async def toggle_conversation_pin(conv_id, pinned=None, port=None):
     """Toggles or sets the pinned state for a conversation in PC Remote and triggers CDP toggle if available."""
-    if not conv_id:
-        return {"status": "error", "message": "Missing conversation ID"}
+    if not is_valid_conv_id(conv_id):
+        return {"status": "error", "message": "Invalid conversation ID"}
 
     current_pins = load_local_pinned_ids()
     if pinned is None:
@@ -398,10 +488,12 @@ async def toggle_conversation_pin(conv_id, pinned=None, port=None):
             ws_url = target.get("webSocketDebuggerUrl")
             if ws_url:
                 async with aiohttp.ClientSession() as session:
-                    async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=1.2)) as ws:
+                    async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=2.0)) as ws:
+                        conv_json = json.dumps(conv_id)
                         js = f"""
                         (() => {{
-                            const row = document.querySelector('[data-cascade-id="{conv_id}"]');
+                            const cid = {conv_json};
+                            const row = document.querySelector(`[data-cascade-id="${{cid}}"]`);
                             if (!row) return {{ found: false }};
                             const btn = row.querySelector('button[aria-label="Pin conversation"], button[aria-label="Unpin conversation"]');
                             if (btn) {{
@@ -411,17 +503,9 @@ async def toggle_conversation_pin(conv_id, pinned=None, port=None):
                             return {{ found: true, clicked: false }};
                         }})()
                         """
-                        await ws.send_str(json.dumps({
-                            "id": 502,
-                            "method": "Runtime.evaluate",
-                            "params": {"expression": js, "returnByValue": True}
-                        }))
-                        while True:
-                            r = await ws.receive_json()
-                            if r.get("id") == 502:
-                                res = r.get("result", {}).get("result", {}).get("value", {})
-                                cdp_triggered = res.get("clicked", False)
-                                break
+                        r = await _cdp_call(ws, 502, "Runtime.evaluate", {"expression": js, "returnByValue": True}, timeout=1.5)
+                        res = r.get("result", {}).get("result", {}).get("value", {})
+                        cdp_triggered = bool(res.get("clicked", False))
     except Exception as e:
         logger.debug(f"CDP pin toggle error: {e}")
 
@@ -434,11 +518,12 @@ async def toggle_conversation_pin(conv_id, pinned=None, port=None):
 
 async def get_conversations_list(port=None):
     """Retrieves all active and historical conversations from brain/, marking pinned and currently running ones."""
+    cache_ttl = 20.0 if _is_game_mode_silent() else 4.0
     active_id = await get_active_conversation_id(port)
     pinned_ids = await get_pinned_conversation_ids(port)
     target = await find_antigravity_target(port)
     running_ids = await get_running_conversation_ids_cdp(target=target, port=port)
-    convs = get_all_brain_conversations()
+    convs = get_all_brain_conversations(cache_ttl=cache_ttl)
     for c in convs:
         c["isCurrent"] = (c["id"] == active_id)
         c["isPinned"] = (c["id"] in pinned_ids)
@@ -455,8 +540,8 @@ async def get_conversations_list(port=None):
 
 async def switch_conversation(conv_id, port=None):
     """Navigates Antigravity UI to the specified conversation ID while preserving project context."""
-    if not conv_id:
-        return {"status": "error", "message": "Missing conversation ID"}
+    if not is_valid_conv_id(conv_id):
+        return {"status": "error", "message": "Invalid conversation ID"}
 
     target = await find_antigravity_target(port)
     if not target:
@@ -471,26 +556,23 @@ async def switch_conversation(conv_id, port=None):
     try:
         async with aiohttp.ClientSession() as session:
             async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=4.0)) as ws:
+                conv_json = json.dumps(conv_id)
                 js = f"""
                 (() => {{
-                    const link = document.querySelector('a[href*="{conv_id}"]');
+                    const cid = {conv_json};
+                    const link = document.querySelector(`a[href*="${{cid}}"]`);
                     if (link) {{
                         link.click();
                         return {{ success: true, method: 'click' }};
                     }} else {{
                         const currentSearch = window.location.search || '';
-                        window.location.href = '/c/{conv_id}' + currentSearch;
+                        window.location.href = '/c/' + encodeURIComponent(cid) + currentSearch;
                         return {{ success: true, method: 'location' }};
                     }}
                 }})()
                 """
-                await ws.send_str(json.dumps({
-                    "id": 202,
-                    "method": "Runtime.evaluate",
-                    "params": {"expression": js, "returnByValue": True}
-                }))
                 try:
-                    await asyncio.wait_for(ws.receive_json(), timeout=1.8)
+                    await _cdp_call(ws, 202, "Runtime.evaluate", {"expression": js, "returnByValue": True}, timeout=2.0)
                 except Exception:
                     pass
                 await asyncio.sleep(0.5)
@@ -523,28 +605,24 @@ async def create_new_conversation(port=None):
                     }
                 })()
                 """
-                await ws.send_str(json.dumps({
-                    "id": 203,
-                    "method": "Runtime.evaluate",
-                    "params": {"expression": js, "returnByValue": True}
-                }))
-                while True:
-                    reply = await ws.receive_json()
-                    if reply.get("id") == 203:
-                        break
+                await _cdp_call(ws, 203, "Runtime.evaluate", {"expression": js, "returnByValue": True}, timeout=2.5)
                 await asyncio.sleep(1.0)
                 return {"status": "ok", "message": "New conversation initiated"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 async def get_antigravity_status(port=None):
-    """Returns the current connection status, active conversation title, and URL."""
+    """Returns the current connection status, active conversation title, and desktop visibility."""
     running = is_antigravity_running()
+    win_vis = has_antigravity_window_on_default_desktop()
+    cur_desk = get_current_desktop_name()
     target = await find_antigravity_target(port)
     if not target:
         return {
             "connected": False,
             "antigravity_running": running,
+            "window_visible": win_vis,
+            "desktop": cur_desk,
             "title": "Not Connected",
             "url": "",
             "message": "Antigravity DevTools not reachable"
@@ -552,6 +630,8 @@ async def get_antigravity_status(port=None):
     return {
         "connected": True,
         "antigravity_running": running,
+        "window_visible": win_vis,
+        "desktop": cur_desk,
         "title": target.get("title", "Active Conversation"),
         "url": target.get("url", ""),
         "id": target.get("id", "")
@@ -614,7 +694,29 @@ async def get_active_conversation_id(port=None):
 
 def parse_conversation_history(conv_id, limit=50):
     """Parses transcript.jsonl into clean user/assistant messages and live agent status."""
-    logs_dir = BRAIN_DIR / conv_id / ".system_generated" / "logs"
+    if not is_valid_conv_id(conv_id):
+        return {
+            "status": "error",
+            "message": "Invalid conversation ID",
+            "conversation_id": conv_id,
+            "agent_status": "error",
+            "current_action": "",
+            "messages": []
+        }
+
+    base_dir = BRAIN_DIR.resolve()
+    conv_dir = (base_dir / conv_id).resolve()
+    if not conv_dir.is_relative_to(base_dir):
+        return {
+            "status": "error",
+            "message": "Invalid conversation path",
+            "conversation_id": conv_id,
+            "agent_status": "error",
+            "current_action": "",
+            "messages": []
+        }
+
+    logs_dir = conv_dir / ".system_generated" / "logs"
     compact_path = logs_dir / "transcript.jsonl"
     full_path = logs_dir / "transcript_full.jsonl"
 
@@ -629,55 +731,60 @@ def parse_conversation_history(conv_id, limit=50):
         }
 
     try:
+        recent_lines = deque(maxlen=500)
+        total_lines = 0
         with open(compact_path, "r", encoding="utf-8", errors="replace") as f:
-            all_lines = f.readlines()
-        
-        recent_lines = all_lines[-500:] if len(all_lines) > 500 else all_lines
-        start_index = len(all_lines) - len(recent_lines)
+            for total_lines, line in enumerate(f, 1):
+                recent_lines.append(line)
+
+        start_index = total_lines - len(recent_lines)
 
         parsed_steps = []
-        for line in recent_lines:
-            line = line.strip()
-            if not line:
+        needed_full_indices = set()
+        for idx_offset, line in enumerate(recent_lines):
+            stripped = line.strip()
+            if not stripped:
                 continue
             try:
-                parsed_steps.append(json.loads(line))
+                obj = json.loads(stripped)
             except Exception:
                 continue
+            abs_idx = start_index + idx_offset
+            parsed_steps.append((abs_idx, obj))
+            trunc = obj.get("truncated_fields", [])
+            if obj.get("type") in ("USER_INPUT", "PLANNER_RESPONSE") and "content" in trunc:
+                needed_full_indices.add(abs_idx)
 
+        # Load any truncated full steps in a single streaming pass over transcript_full.jsonl
         full_cache = {}
-        def get_full_step(idx):
-            if idx in full_cache:
-                return full_cache[idx]
-            if not full_path.exists():
-                return None
+        if needed_full_indices and full_path.exists():
+            max_needed = max(needed_full_indices)
             try:
                 with open(full_path, "r", encoding="utf-8", errors="replace") as ff:
                     for line_idx, line in enumerate(ff):
-                        if line_idx == idx:
-                            obj = json.loads(line.strip())
-                            full_cache[idx] = obj
-                            return obj
+                        if line_idx > max_needed:
+                            break
+                        if line_idx in needed_full_indices:
+                            try:
+                                full_cache[line_idx] = json.loads(line.strip())
+                            except Exception:
+                                pass
             except Exception:
                 pass
-            return None
 
         messages = []
         agent_status = "idle"
         current_action = ""
 
-        for i, step in enumerate(parsed_steps):
-            abs_index = start_index + i
+        for abs_index, step in parsed_steps:
             step_type = step.get("type")
             trunc = step.get("truncated_fields", [])
 
             if step_type == "USER_INPUT":
                 raw_content = step.get("content", "")
-                if "content" in trunc:
-                    fstep = get_full_step(abs_index)
-                    if fstep:
-                        raw_content = fstep.get("content", raw_content)
-                
+                if "content" in trunc and abs_index in full_cache:
+                    raw_content = full_cache[abs_index].get("content", raw_content)
+
                 clean_text = clean_user_text(raw_content)
                 if clean_text:
                     media_list = step.get("media", [])
@@ -691,10 +798,8 @@ def parse_conversation_history(conv_id, limit=50):
 
             elif step_type == "PLANNER_RESPONSE":
                 content = step.get("content", "")
-                if "content" in trunc:
-                    fstep = get_full_step(abs_index)
-                    if fstep:
-                        content = fstep.get("content", content)
+                if "content" in trunc and abs_index in full_cache:
+                    content = full_cache[abs_index].get("content", content)
 
                 tool_calls = step.get("tool_calls", [])
                 if content and content.strip():
@@ -716,9 +821,8 @@ def parse_conversation_history(conv_id, limit=50):
                     current_action = "Размышляет..."
 
         if parsed_steps:
-            last = parsed_steps[-1]
+            _, last = parsed_steps[-1]
             ltype = last.get("type")
-            lstatus = last.get("status")
 
             # Check if this last step is stale (> 3 minutes ago)
             is_stale = False
@@ -791,7 +895,7 @@ async def get_running_conversation_ids_cdp(target=None, port=None) -> set:
         if not ws_url:
             return set()
         async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=1.2)) as ws:
+            async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=2.0)) as ws:
                 js = """
                 (() => {
                     const running = new Set();
@@ -809,19 +913,219 @@ async def get_running_conversation_ids_cdp(target=None, port=None) -> set:
                     return Array.from(running);
                 })()
                 """
-                await ws.send_str(json.dumps({
-                    "id": 405,
-                    "method": "Runtime.evaluate",
-                    "params": {"expression": js, "returnByValue": True}
-                }))
-                while True:
-                    r = await ws.receive_json()
-                    if r.get("id") == 405:
-                        val = r.get("result", {}).get("result", {}).get("value", [])
-                        return set(val) if isinstance(val, list) else set()
+                r = await _cdp_call(ws, 405, "Runtime.evaluate", {"expression": js, "returnByValue": True}, timeout=1.5)
+                val = r.get("result", {}).get("result", {}).get("value", [])
+                return set(val) if isinstance(val, list) else set()
     except Exception as e:
         logger.debug(f"CDP running conversations check failed: {e}")
         return set()
+
+
+async def get_queued_messages_cdp(conv_id=None, target=None, port=None) -> list:
+    """Extracts queued messages directly from Antigravity's [data-testid='queued-messages-card'] DOM."""
+    try:
+        if not target:
+            target = await find_antigravity_target(port)
+        if not target:
+            return []
+        url = target.get("url", "")
+        if conv_id and conv_id not in ("active", "new") and f"/c/{conv_id}" not in url:
+            return []
+        ws_url = target.get("webSocketDebuggerUrl")
+        if not ws_url:
+            return []
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=2.0)) as ws:
+                js = """
+                (() => {
+                    const card = document.querySelector('[data-testid="queued-messages-card"]');
+                    if (!card) return [];
+                    const decorators = Array.from(card.querySelectorAll('[data-testid="queued-decorators"]'));
+                    return decorators.map((dec, idx) => {
+                        const row = (dec.parentElement && dec.parentElement.parentElement) || dec.closest('div');
+                        const left = row ? row.firstElementChild : null;
+                        let text = '';
+                        let hasMedia = false;
+                        if (left) {
+                            hasMedia = !!left.querySelector('img, video, [data-tooltip-id]');
+                            const textSpan = left.querySelector('span.text-sm');
+                            text = (textSpan ? textSpan.textContent : left.innerText || '').trim();
+                            if (text === 'Empty message') text = '';
+                        }
+                        return {
+                            index: idx,
+                            text,
+                            has_media: hasMedia,
+                            can_edit: !!dec.querySelector('button[aria-label="Edit"]'),
+                            can_delete: !!dec.querySelector('button[aria-label="Delete"]'),
+                            can_send_now: !!dec.querySelector('button[aria-label="Send Now"]')
+                        };
+                    });
+                })()
+                """
+                r = await _cdp_call(ws, 406, "Runtime.evaluate", {"expression": js, "returnByValue": True}, timeout=1.5)
+                val = r.get("result", {}).get("result", {}).get("value", [])
+                return val if isinstance(val, list) else []
+    except Exception as e:
+        logger.debug(f"CDP queued messages check failed: {e}")
+        return []
+
+
+async def queue_action_cdp(action: str, index: int, expected_text: str = "", new_text: str = "", conv_id: str = None, port=None):
+    """Performs delete, send_now, or edit on a queued message inside Antigravity's QueuedMessagesCard via CDP."""
+    action = (action or "").strip().lower()
+    if action not in ("delete", "send_now", "edit"):
+        return {"status": "error", "message": "Invalid queue action"}
+    if conv_id and conv_id not in ("active", "new") and not is_valid_conv_id(conv_id):
+        return {"status": "error", "message": "Invalid conversation ID"}
+    if action == "edit" and not (new_text or "").strip():
+        return {"status": "error", "message": "Edited message text cannot be empty"}
+
+    ready, _ = await ensure_antigravity_ready(timeout=15)
+    if not ready:
+        return {"status": "error", "message": "Antigravity DevTools не отвечает"}
+
+    target = await find_antigravity_target(port)
+    if not target:
+        return {"status": "error", "message": "Antigravity target not found"}
+
+    if conv_id and conv_id not in ("active", "new") and f"/c/{conv_id}" not in target.get("url", ""):
+        await switch_conversation(conv_id, port)
+        await asyncio.sleep(0.7)
+        target = await find_antigravity_target(port) or target
+
+    ws_url = target.get("webSocketDebuggerUrl")
+    if not ws_url:
+        return {"status": "error", "message": "No webSocketDebuggerUrl available"}
+
+    aria_map = {
+        "delete": "Delete",
+        "send_now": "Send Now",
+        "edit": "Edit",
+    }
+    btn_label = aria_map[action]
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=8.0)) as ws:
+                click_js = f"""
+                (() => {{
+                    const card = document.querySelector('[data-testid="queued-messages-card"]');
+                    if (!card) return {{ ok: false, error: 'Очередь сообщений пуста' }};
+                    const decorators = Array.from(card.querySelectorAll('[data-testid="queued-decorators"]'));
+                    if (!decorators.length) return {{ ok: false, error: 'Очередь сообщений пуста' }};
+
+                    const reqIndex = {int(index)};
+                    const expected = {json.dumps((expected_text or '').strip())};
+                    const btnLabel = {json.dumps(btn_label)};
+
+                    const getText = (dec) => {{
+                        const row = (dec.parentElement && dec.parentElement.parentElement) || dec.closest('div');
+                        const left = row ? row.firstElementChild : null;
+                        if (!left) return '';
+                        const sp = left.querySelector('span.text-sm');
+                        let t = (sp ? sp.textContent : left.innerText || '').trim();
+                        return t === 'Empty message' ? '' : t;
+                    }};
+
+                    let chosenIdx = -1;
+                    if (reqIndex >= 0 && reqIndex < decorators.length) {{
+                        const candidateText = getText(decorators[reqIndex]);
+                        if (!expected || candidateText === expected) {{
+                            chosenIdx = reqIndex;
+                        }}
+                    }}
+                    if (chosenIdx === -1 && expected) {{
+                        chosenIdx = decorators.findIndex(d => getText(d) === expected);
+                    }}
+                    if (chosenIdx === -1 && !expected && reqIndex >= 0 && reqIndex < decorators.length) {{
+                        chosenIdx = reqIndex;
+                    }}
+                    if (chosenIdx === -1) {{
+                        return {{ ok: false, error: 'Сообщение уже отправлено или удалено из очереди' }};
+                    }}
+
+                    const targetDec = decorators[chosenIdx];
+                    let btn = targetDec.querySelector(`button[aria-label="${{btnLabel}}"]`);
+                    let fallbackDeleted = false;
+                    if (!btn && btnLabel === 'Edit') {{
+                        btn = targetDec.querySelector('button[aria-label="Delete"]');
+                        fallbackDeleted = !!btn;
+                    }}
+                    if (!btn) {{
+                        return {{ ok: false, error: `Кнопка ${{btnLabel}} недоступна` }};
+                    }}
+                    btn.click();
+                    return {{ ok: true, index: chosenIdx, fallbackDeleted }};
+                }})()
+                """
+                r = await _cdp_call(ws, 701, "Runtime.evaluate", {"expression": click_js, "returnByValue": True}, timeout=2.5)
+                click_res = r.get("result", {}).get("result", {}).get("value", {})
+                if not click_res.get("ok"):
+                    return {"status": "error", "message": click_res.get("error", "Queue item action failed")}
+
+                if action == "edit":
+                    await asyncio.sleep(0.22)
+                    clean_new = (new_text or "").strip()
+                    # Focus composer and select-all existing content restored by Edit before replacing
+                    clear_js = """
+                    (() => {
+                        const el = document.querySelector('[aria-label="Message input"]') ||
+                                   document.querySelector('[contenteditable="true"]') ||
+                                   document.querySelector('textarea');
+                        if (!el) return { found: false };
+                        el.focus();
+                        el.click();
+                        try {
+                            document.execCommand('selectAll', false, null);
+                        } catch (e) {}
+                        return { found: true };
+                    })()
+                    """
+                    rc = await _cdp_call(ws, 702, "Runtime.evaluate", {"expression": clear_js, "returnByValue": True}, timeout=2.0)
+                    if not rc.get("result", {}).get("result", {}).get("value", {}).get("found"):
+                        return {"status": "error", "message": "Message input not found during edit"}
+
+                    if not click_res.get("fallbackDeleted"):
+                        await _cdp_call(ws, 703, "Input.dispatchKeyEvent", {
+                            "type": "keyDown", "windowsVirtualKeyCode": 8, "key": "Backspace", "code": "Backspace"
+                        }, timeout=2.0)
+                        await _cdp_call(ws, 704, "Input.dispatchKeyEvent", {
+                            "type": "keyUp", "windowsVirtualKeyCode": 8, "key": "Backspace", "code": "Backspace"
+                        }, timeout=2.0)
+
+                    await _cdp_call(ws, 705, "Input.insertText", {"text": clean_new}, timeout=2.5)
+                    await asyncio.sleep(0.08)
+                    await _cdp_call(ws, 706, "Input.dispatchKeyEvent", {
+                        "type": "keyDown", "windowsVirtualKeyCode": 13, "key": "Enter", "code": "Enter", "text": "\r"
+                    }, timeout=2.0)
+                    await _cdp_call(ws, 707, "Input.dispatchKeyEvent", {
+                        "type": "keyUp", "windowsVirtualKeyCode": 13, "key": "Enter", "code": "Enter"
+                    }, timeout=2.0)
+                    submit_js = """
+                    (() => {
+                        const btns = Array.from(document.querySelectorAll('button'));
+                        const sendBtn = btns.find(b =>
+                            (b.getAttribute('aria-label') || '').toLowerCase().includes('send') ||
+                            (b.getAttribute('title') || '').toLowerCase().includes('send')
+                        );
+                        if (sendBtn && !sendBtn.disabled) { sendBtn.click(); return true; }
+                        return false;
+                    })()
+                    """
+                    await _cdp_call(ws, 708, "Runtime.evaluate", {"expression": submit_js, "returnByValue": True}, timeout=2.0)
+
+                await asyncio.sleep(0.28)
+                updated_queue = await get_queued_messages_cdp(conv_id=conv_id, target=target, port=port)
+                return {
+                    "status": "ok",
+                    "action": action,
+                    "queued_messages": updated_queue
+                }
+    except Exception as e:
+        logger.error(f"Queue action '{action}' failed: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
+
 
 async def check_agent_active_status_cdp(conv_id=None, target=None, port=None):
     """
@@ -835,7 +1139,7 @@ async def check_agent_active_status_cdp(conv_id=None, target=None, port=None):
     return (conv_id in running_ids), ""
 
 async def get_conversation_chat(conv_id=None, limit=50, port=None):
-    """Asynchronously retrieves chat messages and truthful real-time status strictly for the requested conversation."""
+    """Asynchronously retrieves chat messages, queued messages, and truthful real-time status strictly for the requested conversation."""
     target = await find_antigravity_target(port)
     if not conv_id or conv_id == "active":
         if target:
@@ -853,11 +1157,13 @@ async def get_conversation_chat(conv_id=None, limit=50, port=None):
             "conversation_id": "new",
             "agent_status": "idle",
             "current_action": "",
-            "messages": []
+            "messages": [],
+            "queued_messages": []
         }
 
-    chat_data = parse_conversation_history(conv_id, limit=limit)
+    chat_data = await asyncio.to_thread(parse_conversation_history, conv_id, limit)
     running_ids = await get_running_conversation_ids_cdp(target=target, port=port)
+    queued_messages = await get_queued_messages_cdp(conv_id=conv_id, target=target, port=port)
     is_live_running = (conv_id in running_ids)
 
     if is_live_running:
@@ -870,61 +1176,37 @@ async def get_conversation_chat(conv_id=None, limit=50, port=None):
         chat_data["agent_status"] = "idle"
         chat_data["current_action"] = ""
 
+    chat_data["queued_messages"] = queued_messages
     return chat_data
 
 async def attach_file_to_composer(ws, file_path):
     """Sets files on the Antigravity hidden file input via CDP DOM.setFileInputFiles."""
     try:
-        # Step 1: Enable DOM
-        await ws.send_str(json.dumps({"id": 301, "method": "DOM.enable"}))
-        while True:
-            r = await ws.receive_json()
-            if r.get("id") == 301:
-                break
-        
-        # Step 2: Get Document
-        await ws.send_str(json.dumps({"id": 302, "method": "DOM.getDocument"}))
-        root_node_id = None
-        while True:
-            r = await ws.receive_json()
-            if r.get("id") == 302:
-                root_node_id = r.get("result", {}).get("root", {}).get("nodeId")
-                break
-        
+        await _cdp_call(ws, 301, "DOM.enable", timeout=2.5)
+        r_doc = await _cdp_call(ws, 302, "DOM.getDocument", timeout=2.5)
+        root_node_id = r_doc.get("result", {}).get("root", {}).get("nodeId")
         if not root_node_id:
             logger.warning("Could not get root nodeId from DOM")
             return False
-            
-        # Step 3: Query file input
-        await ws.send_str(json.dumps({
-            "id": 303,
-            "method": "DOM.querySelector",
-            "params": {"nodeId": root_node_id, "selector": 'input[type="file"]'}
-        }))
-        file_node_id = None
-        while True:
-            r = await ws.receive_json()
-            if r.get("id") == 303:
-                file_node_id = r.get("result", {}).get("nodeId")
-                break
-                
+
+        r_q = await _cdp_call(
+            ws, 303, "DOM.querySelector",
+            {"nodeId": root_node_id, "selector": 'input[type="file"]'},
+            timeout=2.5
+        )
+        file_node_id = r_q.get("result", {}).get("nodeId")
         if not file_node_id:
             logger.warning("Could not find input[type='file'] in Antigravity DOM")
             return False
 
-        # Step 4: Set file path
         abs_path = str(Path(file_path).resolve())
-        await ws.send_str(json.dumps({
-            "id": 304,
-            "method": "DOM.setFileInputFiles",
-            "params": {"files": [abs_path], "nodeId": file_node_id}
-        }))
-        while True:
-            r = await ws.receive_json()
-            if r.get("id") == 304:
-                logger.info(f"Successfully attached file via CDP: {abs_path}")
-                break
-        
+        await _cdp_call(
+            ws, 304, "DOM.setFileInputFiles",
+            {"files": [abs_path], "nodeId": file_node_id},
+            timeout=3.0
+        )
+        logger.info(f"Successfully attached file via CDP: {abs_path}")
+
         # Wait 350ms for React/Chromium to render attachment chip
         await asyncio.sleep(0.35)
         return True
@@ -941,6 +1223,8 @@ async def send_prompt_to_antigravity(prompt_text, image_path=None, conv_id=None,
     prompt_text = (prompt_text or "").strip()
     if not prompt_text and not image_path:
         return {"status": "error", "message": "Prompt text and image are both empty"}
+    if conv_id and conv_id not in ("active", "new") and not is_valid_conv_id(conv_id):
+        return {"status": "error", "message": "Invalid conversation ID"}
 
     # 1. Ensure Antigravity is running and connected via DevTools first!
     ready, launch_status = await ensure_antigravity_ready(timeout=25)
@@ -978,7 +1262,7 @@ async def send_prompt_to_antigravity(prompt_text, image_path=None, conv_id=None,
     if not ws_url:
         return {"status": "error", "message": "No webSocketDebuggerUrl available for Antigravity"}
 
-    if focus_window:
+    if focus_window and not _is_game_mode_silent():
         focus_antigravity_window()
 
     try:
@@ -1009,19 +1293,15 @@ async def send_prompt_to_antigravity(prompt_text, image_path=None, conv_id=None,
                 """
                 found = False
                 for _ in range(8):
-                    await ws.send_str(json.dumps({
-                        "id": 101,
-                        "method": "Runtime.evaluate",
-                        "params": {"expression": focus_js, "returnByValue": True}
-                    }))
-                    while True:
-                        try:
-                            reply = await asyncio.wait_for(ws.receive_json(), timeout=2.0)
-                            if reply.get("id") == 101:
-                                found = reply.get("result", {}).get("result", {}).get("value", {}).get("found", False)
-                                break
-                        except (asyncio.TimeoutError, Exception):
-                            break
+                    try:
+                        reply = await _cdp_call(
+                            ws, 101, "Runtime.evaluate",
+                            {"expression": focus_js, "returnByValue": True},
+                            timeout=2.0
+                        )
+                        found = bool(reply.get("result", {}).get("result", {}).get("value", {}).get("found", False))
+                    except Exception:
+                        found = False
                     if found:
                         break
                     await asyncio.sleep(0.25)
@@ -1034,48 +1314,24 @@ async def send_prompt_to_antigravity(prompt_text, image_path=None, conv_id=None,
 
                 # Step 2: Insert text via CDP Input.insertText (if provided)
                 if prompt_text:
-                    await ws.send_str(json.dumps({
-                        "id": 102,
-                        "method": "Input.insertText",
-                        "params": {"text": prompt_text}
-                    }))
-                    while True:
-                        r = await ws.receive_json()
-                        if r.get("id") == 102:
-                            break
+                    await _cdp_call(ws, 102, "Input.insertText", {"text": prompt_text}, timeout=3.0)
 
                 # Step 3: Trigger Enter key event to submit
                 await asyncio.sleep(0.08)
-                await ws.send_str(json.dumps({
-                    "id": 103,
-                    "method": "Input.dispatchKeyEvent",
-                    "params": {
-                        "type": "keyDown",
-                        "windowsVirtualKeyCode": 13,
-                        "key": "Enter",
-                        "code": "Enter",
-                        "text": "\r"
-                    }
-                }))
-                while True:
-                    r = await ws.receive_json()
-                    if r.get("id") == 103:
-                        break
+                await _cdp_call(ws, 103, "Input.dispatchKeyEvent", {
+                    "type": "keyDown",
+                    "windowsVirtualKeyCode": 13,
+                    "key": "Enter",
+                    "code": "Enter",
+                    "text": "\r"
+                }, timeout=2.0)
 
-                await ws.send_str(json.dumps({
-                    "id": 104,
-                    "method": "Input.dispatchKeyEvent",
-                    "params": {
-                        "type": "keyUp",
-                        "windowsVirtualKeyCode": 13,
-                        "key": "Enter",
-                        "code": "Enter"
-                    }
-                }))
-                while True:
-                    r = await ws.receive_json()
-                    if r.get("id") == 104:
-                        break
+                await _cdp_call(ws, 104, "Input.dispatchKeyEvent", {
+                    "type": "keyUp",
+                    "windowsVirtualKeyCode": 13,
+                    "key": "Enter",
+                    "code": "Enter"
+                }, timeout=2.0)
 
                 # Step 4: Click Send button if still present
                 click_send_js = """
@@ -1085,28 +1341,23 @@ async def send_prompt_to_antigravity(prompt_text, image_path=None, conv_id=None,
                         (b.getAttribute('aria-label') || '').toLowerCase().includes('send') ||
                         (b.getAttribute('title') || '').toLowerCase().includes('send')
                     );
-                    if (sendBtn) {
+                    if (sendBtn && !sendBtn.disabled) {
                         sendBtn.click();
                         return true;
                     }
                     return false;
                 })()
                 """
-                await ws.send_str(json.dumps({
-                    "id": 105,
-                    "method": "Runtime.evaluate",
-                    "params": {"expression": click_send_js, "returnByValue": True}
-                }))
-                while True:
-                    r = await ws.receive_json()
-                    if r.get("id") == 105:
-                        break
+                await _cdp_call(ws, 105, "Runtime.evaluate", {"expression": click_send_js, "returnByValue": True}, timeout=2.0)
 
+                await asyncio.sleep(0.2)
+                queued = await get_queued_messages_cdp(conv_id=conv_id, target=target, port=port)
                 return {
                     "status": "ok",
                     "message": "Prompt successfully delivered to Antigravity!",
                     "target_title": target.get("title", ""),
-                    "image_attached": bool(image_path)
+                    "image_attached": bool(image_path),
+                    "queued_messages": queued
                 }
     except Exception as e:
         logger.error(f"CDP injection failed: {e}", exc_info=True)
@@ -1114,6 +1365,8 @@ async def send_prompt_to_antigravity(prompt_text, image_path=None, conv_id=None,
 
 async def stop_agent_execution(conv_id=None, port=None):
     """Triggers the Stop button in Antigravity via CDP to immediately abort execution."""
+    if conv_id and conv_id not in ("active", "new") and not is_valid_conv_id(conv_id):
+        return {"status": "error", "message": "Invalid conversation ID"}
     target = await find_antigravity_target(port)
     if not target:
         return {"status": "error", "message": "Antigravity not found"}
@@ -1123,12 +1376,13 @@ async def stop_agent_execution(conv_id=None, port=None):
         return {"status": "error", "message": "No debugger URL"}
 
     cid = conv_id or ""
+    cid_json = json.dumps(cid)
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=2.0)) as ws:
+            async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=2.5)) as ws:
                 js = f"""
                 (() => {{
-                    const convId = '{cid}';
+                    const convId = {cid_json};
 
                     // 1. If convId is provided, first look for its sidebar row stop button
                     if (convId) {{
@@ -1164,16 +1418,9 @@ async def stop_agent_execution(conv_id=None, port=None):
                     return {{ clicked: false, message: "No active stop button found for conversation " + convId }};
                 }})()
                 """
-                await ws.send_str(json.dumps({
-                    "id": 801,
-                    "method": "Runtime.evaluate",
-                    "params": {"expression": js, "returnByValue": True}
-                }))
-                while True:
-                    r = await ws.receive_json()
-                    if r.get("id") == 801:
-                        res = r.get("result", {}).get("result", {}).get("value", {})
-                        return {"status": "ok", "result": res}
+                r = await _cdp_call(ws, 801, "Runtime.evaluate", {"expression": js, "returnByValue": True}, timeout=2.0)
+                res = r.get("result", {}).get("result", {}).get("value", {})
+                return {"status": "ok", "result": res}
     except Exception as e:
         logger.error(f"Error stopping agent via CDP: {e}")
         return {"status": "error", "message": str(e)}
@@ -1187,7 +1434,7 @@ async def capture_pc_screenshot():
         import io
         import base64
         with mss.mss() as sct:
-            mon = sct.monitors[1]
+            mon = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
             sct_img = sct.grab(mon)
             img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
             if img.width > 1920:
@@ -1206,24 +1453,19 @@ async def capture_pc_screenshot():
             ws_url = target.get("webSocketDebuggerUrl")
             if ws_url:
                 async with aiohttp.ClientSession() as session:
-                    async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=2.0)) as ws:
-                        await ws.send_str(json.dumps({
-                            "id": 901,
-                            "method": "Page.captureScreenshot",
-                            "params": {"format": "jpeg", "quality": 82}
-                        }))
-                        while True:
-                            r = await ws.receive_json()
-                            if r.get("id") == 901:
-                                raw_b64 = r.get("result", {}).get("data", "")
-                                return f"data:image/jpeg;base64,{raw_b64}", "cdp_workspace"
+                    async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=2.5)) as ws:
+                        r = await _cdp_call(ws, 901, "Page.captureScreenshot", {"format": "jpeg", "quality": 82}, timeout=2.5)
+                        raw_b64 = r.get("result", {}).get("data", "")
+                        return f"data:image/jpeg;base64,{raw_b64}", "cdp_workspace"
     except Exception as e:
         logger.debug(f"CDP capture fallback failed: {e}")
 
     return None, "failed"
 
+_gpu_telemetry_cache = {"ts": 0.0, "data": None}
+
 def get_pc_telemetry():
-    """Gathers real-time CPU, RAM, disk space, and GPU metrics."""
+    """Gathers real-time CPU, RAM, disk space, and GPU metrics (throttles nvidia-smi during Game Mode)."""
     import psutil
     import subprocess
 
@@ -1231,26 +1473,36 @@ def get_pc_telemetry():
     v = psutil.virtual_memory()
     d = psutil.disk_usage("C:\\")
 
-    gpu_info = None
-    try:
-        out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
-            stderr=subprocess.DEVNULL,
-            timeout=0.8,
-            text=True
-        ).strip()
-        if out:
-            parts = [p.strip() for p in out.split(",")]
-            if len(parts) >= 5:
-                gpu_info = {
-                    "name": parts[0],
-                    "temp_c": int(parts[1]),
-                    "percent": int(parts[2]),
-                    "vram_used_mb": int(parts[3]),
-                    "vram_total_mb": int(parts[4])
-                }
-    except Exception:
-        pass
+    now = time.time()
+    gpu_ttl = 12.0 if _is_game_mode_silent() else 3.0
+    gpu_info = _gpu_telemetry_cache["data"]
+    if (now - _gpu_telemetry_cache["ts"]) >= gpu_ttl:
+        fresh_gpu = None
+        try:
+            no_win = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            out = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
+                stderr=subprocess.DEVNULL,
+                timeout=0.8,
+                text=True,
+                creationflags=no_win
+            ).strip()
+            if out:
+                parts = [p.strip() for p in out.split(",")]
+                if len(parts) >= 5:
+                    fresh_gpu = {
+                        "name": parts[0],
+                        "temp_c": int(parts[1]),
+                        "percent": int(parts[2]),
+                        "vram_used_mb": int(parts[3]),
+                        "vram_total_mb": int(parts[4])
+                    }
+        except Exception:
+            pass
+        _gpu_telemetry_cache["ts"] = now
+        if fresh_gpu is not None:
+            _gpu_telemetry_cache["data"] = fresh_gpu
+            gpu_info = fresh_gpu
 
     battery_info = None
     try:
@@ -1418,9 +1670,11 @@ async def get_antigravity_quota_and_plan(port=None, force=False, force_refresh=F
                     
                     return { ok: true, raw: dialogText };
                 })()"""
-                msg = {'id': 99, 'method': 'Runtime.evaluate', 'params': {'expression': script, 'awaitPromise': True, 'returnByValue': True}}
-                await ws.send_str(json.dumps(msg))
-                resp = json.loads(await ws.receive_str())
+                resp = await _cdp_call(
+                    ws, 99, "Runtime.evaluate",
+                    {"expression": script, "awaitPromise": True, "returnByValue": True},
+                    timeout=5.0
+                )
                 data = resp.get('result', {}).get('result', {}).get('value', {})
                 raw_text = data.get('raw', '')
                 if not raw_text:

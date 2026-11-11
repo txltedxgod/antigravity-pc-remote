@@ -10,7 +10,15 @@ ENV/
 build/
 *.idsig
 *.log
+*.log.*
 .credentials.json
+.auth_token
+server/.auth_token
+server/tunnel_url.txt
+server/last_wifi_profile.txt
+server/game_mode_config.json
+.tunnel_beacon.json
+server/.tunnel_beacon.json
 cloudflared.exe
 .DS_Store
 Thumbs.db

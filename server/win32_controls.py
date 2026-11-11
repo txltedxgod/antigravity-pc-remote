@@ -8,17 +8,204 @@ Provides native Windows operations without external heavy dependencies:
 - Bidirectional clipboard access
 """
 
+import contextlib
 import ctypes
+import json
+import logging
 import os
+import re
 import subprocess
+import threading
 import time
+import urllib.parse
 from ctypes import wintypes
+from pathlib import Path
 import win32clipboard
 import win32con
+
+logger = logging.getLogger("Win32Controls")
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 powrprof = ctypes.windll.powrprof
+shell32 = ctypes.windll.shell32
+
+_cpu_lock = threading.Lock()
+_SAFE_EXE_RE = re.compile(r"^[a-zA-Z0-9._-]{1,64}\.exe$")
+_SAFE_HOST_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9.:-]{0,252}$")
+
+# --- GAME MODE ENGINE (NON-INTRUSIVE BACKGROUND CONTROL) ---
+GAME_MODE_FILE = Path(__file__).resolve().parent / "game_mode_config.json"
+KNOWN_GAME_EXES = {
+    "cs2.exe", "csgo.exe", "dota2.exe", "valorant.exe", "valorant-win64-shipping.exe",
+    "r5apex.exe", "gta5.exe", "playgtav.exe", "cyberpunk2077.exe", "eldenring.exe",
+    "rustclient.exe", "fortniteclient-win64-shipping.exe", "overwatch.exe", "tslgame.exe",
+    "escapefromtarkov.exe", "worldoftanks.exe", "witcher3.exe", "bg3.exe", "bg3_dx11.exe",
+    "deadlock.exe", "project8.exe", "helldivers2.exe", "palworld-win64-shipping.exe",
+    "rocketleague.exe", "league of legends.exe", "minecraft.windows.exe", "hl2.exe",
+    "forzahorizon5.exe", "rdr2.exe", "starfield.exe", "warframe.x64.exe", "destiny2.exe",
+    "pubg.exe", "bf2042.exe", "cod.exe", "rainbow six.exe", "rainbowsix.exe"
+}
+NON_GAME_FULLSCREEN_EXES = {
+    "explorer.exe", "chrome.exe", "msedge.exe", "firefox.exe", "opera.exe", "brave.exe",
+    "antigravity.exe", "code.exe", "dwm.exe", "shellexperiencehost.exe", "searchhost.exe",
+    "taskmgr.exe", "applicationframehost.exe", "lockapp.exe", "logonui.exe"
+}
+_DISRUPTIVE_GAME_HOTKEYS = {"win_d", "alt_tab", "alt_f4", "ctrl_w", "win", "f11"}
+
+_game_mode_lock = threading.Lock()
+_game_mode_setting = "auto"  # "auto" | "on" | "off"
+_game_detect_cache = {"ts": 0.0, "is_game": False, "game_name": None}
+_last_priority_mode = None  # None | "gaming" | "normal"
+
+def _load_game_mode_setting():
+    global _game_mode_setting
+    try:
+        if GAME_MODE_FILE.exists():
+            data = json.loads(GAME_MODE_FILE.read_text(encoding="utf-8"))
+            mode = str(data.get("mode", "auto")).lower().strip()
+            if mode in ("auto", "on", "off"):
+                _game_mode_setting = mode
+    except Exception:
+        pass
+    return _game_mode_setting
+
+_load_game_mode_setting()
+
+def set_game_mode(mode: str):
+    """Sets Game Mode preference: 'auto', 'on', or 'off'."""
+    global _game_mode_setting
+    clean = (mode or "auto").lower().strip()
+    if clean not in ("auto", "on", "off"):
+        return {"status": "error", "message": "Invalid game mode. Expected: auto, on, off"}
+    with _game_mode_lock:
+        _game_mode_setting = clean
+        try:
+            GAME_MODE_FILE.write_text(json.dumps({"mode": clean}), encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"Could not save game mode config: {e}")
+    status = get_game_mode_status(force_refresh=True)
+    return {"status": "ok", **status}
+
+def _apply_gaming_process_priorities(gaming_active: bool):
+    """Lowers background server/tunnel/IDE priority during gaming to prevent FPS micro-stutters."""
+    global _last_priority_mode
+    target_mode = "gaming" if gaming_active else "normal"
+    if _last_priority_mode == target_mode:
+        return
+    _last_priority_mode = target_mode
+    try:
+        import psutil
+        target_prio = psutil.BELOW_NORMAL_PRIORITY_CLASS if gaming_active else psutil.NORMAL_PRIORITY_CLASS
+        my_pid = os.getpid()
+        for p in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                pid = p.info['pid']
+                name = (p.info.get('name') or '').lower()
+                if pid == my_pid or name == "cloudflared.exe":
+                    p.nice(target_prio)
+                elif name == "antigravity.exe":
+                    cmd = " ".join(p.info.get('cmdline') or []).lower()
+                    if "--type=renderer" in cmd or "--type=gpu-process" in cmd:
+                        p.nice(target_prio)
+            except Exception:
+                pass
+        logger.info(f"[GameMode] Adjusted background priorities -> {target_mode}")
+    except Exception as e:
+        logger.debug(f"Could not adjust process priorities: {e}")
+
+def detect_running_game(force_refresh: bool = False):
+    """Detects whether a fullscreen D3D game or known game executable is currently running in foreground."""
+    now = time.time()
+    with _game_mode_lock:
+        if not force_refresh and (now - _game_detect_cache["ts"] < 3.0):
+            return _game_detect_cache["is_game"], _game_detect_cache["game_name"]
+
+    is_game = False
+    game_name = None
+    try:
+        import psutil
+        # 1. Check Windows Shell Fullscreen / Presentation notification state
+        q_state = ctypes.c_int(0)
+        try:
+            shell32.SHQueryUserNotificationState(ctypes.byref(q_state))
+        except Exception:
+            pass
+        is_d3d_fullscreen = (q_state.value == 3)  # QUNS_RUNNING_D3D_FULL_SCREEN
+
+        # 2. Check active foreground window process on Default desktop
+        fg_exe = None
+        with _interactive_desktop():
+            hwnd = user32.GetForegroundWindow()
+            if hwnd:
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value > 0:
+                    try:
+                        fg_exe = psutil.Process(pid.value).name()
+                    except Exception:
+                        fg_exe = None
+
+        fg_low = (fg_exe or "").lower()
+        if fg_low in KNOWN_GAME_EXES:
+            is_game = True
+            game_name = fg_exe
+        elif is_d3d_fullscreen and fg_low and fg_low not in NON_GAME_FULLSCREEN_EXES:
+            is_game = True
+            game_name = fg_exe
+        elif is_d3d_fullscreen:
+            # Fallback: verify if any known game exe is active
+            for p in psutil.process_iter(['name']):
+                pname = (p.info.get('name') or '')
+                if pname.lower() in KNOWN_GAME_EXES:
+                    is_game = True
+                    game_name = pname
+                    break
+    except Exception as e:
+        logger.debug(f"detect_running_game error: {e}")
+
+    with _game_mode_lock:
+        _game_detect_cache.update({"ts": now, "is_game": is_game, "game_name": game_name})
+    return is_game, game_name
+
+def get_game_mode_status(force_refresh: bool = False):
+    """Returns full Game Mode state and synchronizes background priority throttling."""
+    mode = _game_mode_setting
+    detected, game_name = detect_running_game(force_refresh=force_refresh) if mode != "off" else (False, None)
+    active = (mode == "on") or (mode == "auto" and detected)
+    _apply_gaming_process_priorities(active)
+    return {
+        "mode": mode,
+        "active": active,
+        "detected_game": game_name
+    }
+
+def is_game_mode_active() -> bool:
+    """Fast check returning True if Game Mode shield is currently active."""
+    return get_game_mode_status()["active"]
+
+
+@contextlib.contextmanager
+def _interactive_desktop():
+    """Temporarily binds current thread to interactive desktop and guarantees handle cleanup."""
+    prev_desk = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
+    hdesk = user32.OpenDesktopW('default', 0, False, 0x01FF)
+    try:
+        if hdesk:
+            user32.SetThreadDesktop(hdesk)
+        yield hdesk
+    finally:
+        if prev_desk:
+            try:
+                user32.SetThreadDesktop(prev_desk)
+            except Exception:
+                pass
+        if hdesk:
+            try:
+                user32.CloseDesktop(hdesk)
+            except Exception:
+                pass
 
 # Virtual-Key Codes
 VK_VOLUME_MUTE = 0xAD
@@ -113,51 +300,47 @@ VK_MAPPING = {
     "right": [0x27],
 }
 
-def trigger_hotkey(name):
-    """Executes a defined keyboard shortcut on the interactive desktop."""
+def trigger_hotkey(name, force=False):
+    """Executes a defined keyboard shortcut on the interactive desktop (respecting Game Mode)."""
     name = (name or "").lower().strip()
+    if not force and is_game_mode_active() and name in _DISRUPTIVE_GAME_HOTKEYS:
+        logger.info(f"[GameMode] Blocked disruptive hotkey '{name}'")
+        return False
     keys = VK_MAPPING.get(name)
     if not keys:
         return False
-    hdesk = user32.OpenDesktopW('default', 0, False, 0x01FF)
-    if hdesk:
-        user32.SetThreadDesktop(hdesk)
-    for k in keys:
-        user32.keybd_event(k, 0, 0, 0)
-        time.sleep(0.02)
-    time.sleep(0.04)
-    for k in reversed(keys):
-        user32.keybd_event(k, 0, 2, 0)
-        time.sleep(0.02)
+    with _interactive_desktop():
+        for k in keys:
+            user32.keybd_event(k, 0, 0, 0)
+            time.sleep(0.02)
+        time.sleep(0.04)
+        for k in reversed(keys):
+            user32.keybd_event(k, 0, 2, 0)
+            time.sleep(0.02)
     return True
 
-def close_active_window():
-    """Closes the current foreground window via WM_CLOSE or Alt+F4."""
-    hdesk = user32.OpenDesktopW('default', 0, False, 0x01FF)
-    if hdesk:
-        user32.SetThreadDesktop(hdesk)
-    hwnd = user32.GetForegroundWindow()
-    if hwnd:
-        user32.PostMessageW(hwnd, 0x0010, 0, 0)
-        return True
-    return trigger_hotkey("alt_f4")
+def close_active_window(force=False):
+    """Closes the current foreground window via WM_CLOSE or Alt+F4 (blocked during Game Mode unless forced)."""
+    if not force and is_game_mode_active():
+        logger.info("[GameMode] Blocked close_active_window to protect fullscreen game")
+        return False
+    with _interactive_desktop():
+        hwnd = user32.GetForegroundWindow()
+        if hwnd:
+            user32.PostMessageW(hwnd, 0x0010, 0, 0)
+            return True
+    return trigger_hotkey("alt_f4", force=force)
 
 def get_active_windows():
-    """Returns a list of visible top-level windows on the interactive desktop."""
-    hdesk = user32.OpenDesktopW('default', 0, False, 0x01FF)
-    if hdesk:
-        user32.SetThreadDesktop(hdesk)
-
+    """Returns a list of visible top-level windows on the interactive desktop without spawning tasklist."""
     proc_map = {}
     try:
-        res = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True)
-        for line in res.stdout.splitlines():
-            p = [x.strip('"') for x in line.split('","')]
-            if len(p) >= 2:
-                try:
-                    proc_map[int(p[1])] = p[0]
-                except ValueError:
-                    pass
+        import psutil
+        for p in psutil.process_iter(['pid', 'name']):
+            try:
+                proc_map[p.info['pid']] = p.info['name'] or ""
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -194,46 +377,57 @@ def get_active_windows():
                     })
         return True
 
-    user32.EnumDesktopWindows(hdesk, WNDENUMPROC(enum_cb), 0)
+    with _interactive_desktop() as hdesk:
+        if hdesk:
+            user32.EnumDesktopWindows(hdesk, WNDENUMPROC(enum_cb), 0)
+        else:
+            user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
     return windows
 
-def focus_window(hwnd):
-    """Brings the specified window to the foreground."""
-    hdesk = user32.OpenDesktopW('default', 0, False, 0x01FF)
-    if hdesk:
-        user32.SetThreadDesktop(hdesk)
+def focus_window(hwnd, force=False):
+    """Brings the specified window to the foreground (blocked in Game Mode unless forced)."""
+    if not force and is_game_mode_active():
+        logger.info(f"[GameMode] Blocked focus_window({hwnd}) to avoid Alt-Tabbing game")
+        return False
     try:
         hwnd = int(hwnd)
-        user32.ShowWindow(hwnd, 9)
-        return bool(user32.SetForegroundWindow(hwnd))
+        with _interactive_desktop():
+            user32.ShowWindow(hwnd, 9)
+            return bool(user32.SetForegroundWindow(hwnd))
     except Exception:
         return False
 
 def close_window(hwnd, force=False):
     """Closes or terminates a specific window."""
-    hdesk = user32.OpenDesktopW('default', 0, False, 0x01FF)
-    if hdesk:
-        user32.SetThreadDesktop(hdesk)
     try:
         hwnd = int(hwnd)
-        if force:
-            pid = wintypes.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            if pid.value > 0:
-                subprocess.run(f"taskkill /F /PID {pid.value}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return True
-        user32.PostMessageW(hwnd, 0x0010, 0, 0)
-        return True
+        with _interactive_desktop():
+            if force:
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value > 0:
+                    subprocess.run(
+                        ["taskkill", "/F", "/PID", str(pid.value)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=4,
+                        creationflags=_NO_WINDOW
+                    )
+                    return True
+            user32.PostMessageW(hwnd, 0x0010, 0, 0)
+            return True
     except Exception:
         return False
 
 def volume_up(steps=1):
-    for _ in range(steps):
+    count = max(1, min(50, int(steps)))
+    for _ in range(count):
         send_vk(VK_VOLUME_UP)
         time.sleep(0.01)
 
 def volume_down(steps=1):
-    for _ in range(steps):
+    count = max(1, min(50, int(steps)))
+    for _ in range(count):
         send_vk(VK_VOLUME_DOWN)
         time.sleep(0.01)
 
@@ -259,7 +453,9 @@ def screen_off():
     user32.SendMessageW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, MONITOR_OFF)
 
 def wake_screen():
-    """Wakes the monitor and graphics display stack from sleep."""
+    """Wakes the monitor and graphics display stack from sleep (skipped when actively gaming)."""
+    if is_game_mode_active():
+        return True
     try:
         user32.SendMessageW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, MONITOR_ON)
         user32.mouse_event(1, 0, 0, 0, 0)
@@ -310,30 +506,31 @@ def get_memory_stats():
 
 def get_cpu_stats():
     global _last_idle, _last_kernel, _last_user, _last_cpu_time, _cached_cpu_pct
-    now = time.time()
-    if now - _last_cpu_time < 0.2:
+    with _cpu_lock:
+        now = time.time()
+        if now - _last_cpu_time < 0.2:
+            return _cached_cpu_pct
+
+        idle, kernel, user = FILETIME(), FILETIME(), FILETIME()
+        if not kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+            return _cached_cpu_pct
+
+        i2 = _filetime_to_int(idle)
+        k2 = _filetime_to_int(kernel)
+        u2 = _filetime_to_int(user)
+
+        idle_delta = i2 - _last_idle
+        kernel_delta = k2 - _last_kernel
+        user_delta = u2 - _last_user
+        total = kernel_delta + user_delta
+
+        _last_idle, _last_kernel, _last_user = i2, k2, u2
+        _last_cpu_time = now
+
+        if total > 0:
+            pct = max(0, min(100, int((1.0 - idle_delta / total) * 100)))
+            _cached_cpu_pct = pct
         return _cached_cpu_pct
-
-    idle, kernel, user = FILETIME(), FILETIME(), FILETIME()
-    if not kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
-        return _cached_cpu_pct
-
-    i2 = _filetime_to_int(idle)
-    k2 = _filetime_to_int(kernel)
-    u2 = _filetime_to_int(user)
-
-    idle_delta = i2 - _last_idle
-    kernel_delta = k2 - _last_kernel
-    user_delta = u2 - _last_user
-    total = kernel_delta + user_delta
-
-    _last_idle, _last_kernel, _last_user = i2, k2, u2
-    _last_cpu_time = now
-
-    if total > 0:
-        pct = max(0, min(100, int((1.0 - idle_delta / total) * 100)))
-        _cached_cpu_pct = pct
-    return _cached_cpu_pct
 
 def get_mac_address():
     """Returns primary active MAC address."""
@@ -458,7 +655,7 @@ def launch_application(app_key):
     return {"status": "error", "message": f"Unknown application: {app_key}"}
 
 def kill_application(app_key):
-    """Terminates process by app key or process name."""
+    """Terminates process by app key or strictly validated executable name."""
     app_key = (app_key or "").strip().lower()
     mapping = {
         "dota2": "dota2.exe",
@@ -475,12 +672,29 @@ def kill_application(app_key):
         "telegram": "Telegram.exe",
     }
     if app_key in ("steamghost", "ghost", "idler", "накрутка"):
-        subprocess.run("taskkill /F /IM SteamGhost.exe /IM SteamGhost.App.exe", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "SteamGhost.exe", "/IM", "SteamGhost.App.exe"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            creationflags=_NO_WINDOW
+        )
         return {"status": "ok", "message": "SteamGhost terminated"}
 
-    target = mapping.get(app_key, f"{app_key}.exe" if not app_key.endswith(".exe") else app_key)
+    target = mapping.get(app_key)
+    if not target:
+        candidate = f"{app_key}.exe" if not app_key.endswith(".exe") else app_key
+        if not _SAFE_EXE_RE.match(candidate):
+            return {"status": "error", "message": "Invalid application name"}
+        target = candidate
     try:
-        subprocess.run(f"taskkill /F /IM {target}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["taskkill", "/F", "/IM", target],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            creationflags=_NO_WINDOW
+        )
         return {"status": "ok", "message": f"{target} terminated"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -491,61 +705,75 @@ def run_interactive(cmd_str):
     try:
         subprocess.run(
             ['schtasks', '/create', '/tn', task_name, '/tr', f'cmd.exe /c {cmd_str}', '/sc', 'once', '/st', '23:59', '/f', '/it'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3, creationflags=_NO_WINDOW
         )
         subprocess.run(
             ['schtasks', '/run', '/tn', task_name],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3, creationflags=_NO_WINDOW
         )
         time.sleep(0.4)
         subprocess.run(
             ['schtasks', '/delete', '/tn', task_name, '/f'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3, creationflags=_NO_WINDOW
         )
         return True
     except Exception:
         try:
-            subprocess.Popen(cmd_str, shell=True)
+            subprocess.Popen(cmd_str, shell=True, creationflags=_NO_WINDOW)
             return True
         except Exception:
             return False
 
-def open_url(target):
-    """Opens a URL or Google search query in Google Chrome on the user's interactive desktop."""
+def open_url(target, force=False):
+    """Opens a validated HTTP(S) URL or Google search query in Google Chrome without shell interpolation."""
     target = (target or "").strip()
     if not target:
         return {"status": "error", "message": "Empty query or URL"}
     if not target.startswith("http://") and not target.startswith("https://"):
-        import urllib.parse
         target = f"https://www.google.com/search?q={urllib.parse.quote_plus(target)}"
-    
-    chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-    if os.path.exists(chrome_path):
-        cmd = f'"{chrome_path}" --profile-directory="Default" "{target}"'
-    else:
-        cmd = f'start "" "{target}"'
 
-    run_interactive(cmd)
+    # Strictly validate URL scheme, netloc, and reject control/quote/shell characters
+    if any(ch in target for ch in ('"', "'", "\r", "\n", "\x00", "`")):
+        return {"status": "error", "message": "Invalid characters in URL"}
+    parsed = urllib.parse.urlsplit(target)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return {"status": "error", "message": "Invalid URL"}
+
+    if not force and is_game_mode_active():
+        return {
+            "status": "blocked",
+            "blocked_by_game_mode": True,
+            "message": "🎮 Игровой режим: открытие браузера на ПК заблокировано чтобы не свернуть игру"
+        }
+
+    chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    try:
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        if os.path.exists(chrome_path):
+            subprocess.Popen([chrome_path, "--profile-directory=Default", target], creationflags=flags, close_fds=True)
+        else:
+            os.startfile(target)
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
     # Bring Chrome window to foreground
     try:
         time.sleep(1)
-        hdesk = user32.OpenDesktopW('default', 0, False, 0x01FF)
-        if hdesk:
-            user32.SetThreadDesktop(hdesk)
-            windows = []
-            WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-            def enum_cb(hwnd, lp):
-                if user32.IsWindowVisible(hwnd):
-                    buf = ctypes.create_unicode_buffer(512)
-                    user32.GetWindowTextW(hwnd, buf, 512)
-                    if any(k in buf.value.lower() for k in ['chrome', 'google']):
-                        windows.append(hwnd)
-                return True
-            user32.EnumDesktopWindows(hdesk, WNDENUMPROC(enum_cb), 0)
-            for h in windows:
-                user32.ShowWindow(h, 9) # SW_RESTORE
-                user32.SetForegroundWindow(h)
+        with _interactive_desktop() as hdesk:
+            if hdesk:
+                windows = []
+                WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+                def enum_cb(hwnd, lp):
+                    if user32.IsWindowVisible(hwnd):
+                        buf = ctypes.create_unicode_buffer(512)
+                        user32.GetWindowTextW(hwnd, buf, 512)
+                        if any(k in buf.value.lower() for k in ['chrome', 'google']):
+                            windows.append(hwnd)
+                    return True
+                user32.EnumDesktopWindows(hdesk, WNDENUMPROC(enum_cb), 0)
+                for h in windows:
+                    user32.ShowWindow(h, 9) # SW_RESTORE
+                    user32.SetForegroundWindow(h)
     except Exception:
         pass
 
@@ -553,24 +781,26 @@ def open_url(target):
 
 def restart_pc():
     """Initiates a safe PC reboot with 5 seconds warning."""
-    subprocess.run("shutdown /r /t 5", shell=True)
+    subprocess.run(["shutdown", "/r", "/t", "5"], timeout=4, creationflags=_NO_WINDOW)
     return {"status": "ok", "message": "System reboot initiated (5s delay)"}
 
 def shutdown_pc():
     """Initiates a safe PC shutdown with 5 seconds warning."""
-    subprocess.run("shutdown /s /t 5", shell=True)
+    subprocess.run(["shutdown", "/s", "/t", "5"], timeout=4, creationflags=_NO_WINDOW)
     return {"status": "ok", "message": "System shutdown initiated (5s delay)"}
 
 def cancel_restart_pc():
     """Aborts a pending system reboot or shutdown."""
-    subprocess.run("shutdown /a", shell=True)
+    subprocess.run(["shutdown", "/a"], timeout=4, creationflags=_NO_WINDOW)
     return {"status": "ok", "message": "Power action aborted"}
 
 # --- VIRTUAL MOUSE & TOUCHPAD ---
 def mouse_move_relative(dx: int, dy: int):
-    """Moves mouse cursor relatively by dx, dy."""
+    """Moves mouse cursor relatively by clamped dx, dy."""
     try:
-        user32.mouse_event(0x0001, int(dx), int(dy), 0, 0)
+        cdx = max(-5000, min(5000, int(dx)))
+        cdy = max(-5000, min(5000, int(dy)))
+        user32.mouse_event(0x0001, cdx, cdy, 0, 0)
         return True
     except Exception as e:
         logger.error(f"Error moving mouse: {e}")
@@ -601,9 +831,10 @@ def mouse_click(button: str = "left"):
         return False
 
 def mouse_scroll(delta: int):
-    """Scrolls mouse wheel by delta (e.g. +120 or -120)."""
+    """Scrolls mouse wheel by clamped delta (e.g. +120 or -120)."""
     try:
-        user32.mouse_event(0x0800, 0, 0, int(delta), 0)
+        cdelta = max(-2400, min(2400, int(delta)))
+        user32.mouse_event(0x0800, 0, 0, cdelta, 0)
         return True
     except Exception as e:
         logger.error(f"Error scrolling mouse: {e}")
@@ -611,8 +842,12 @@ def mouse_scroll(delta: int):
 
 # --- VIRTUAL UNICODE KEYBOARD TYPING ---
 def type_unicode_text(text: str):
-    """Types arbitrary Unicode text directly into the foreground window."""
+    """Types arbitrary Unicode text (including surrogate pairs) directly into the foreground window."""
     try:
+        text = str(text or "")[:4000]
+        if not text:
+            return True
+
         class KEYBDINPUT(ctypes.Structure):
             _fields_ = [
                 ('wVk', wintypes.WORD),
@@ -632,8 +867,9 @@ def type_unicode_text(text: str):
         KEYEVENTF_KEYUP = 0x0002
         INPUT_KEYBOARD = 1
 
-        for char in text:
-            code = ord(char)
+        utf16_bytes = text.encode("utf-16-le")
+        for idx in range(0, len(utf16_bytes), 2):
+            code = int.from_bytes(utf16_bytes[idx:idx + 2], "little")
             inp_down = INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=0, wScan=code, dwFlags=KEYEVENTF_UNICODE, time=0, dwExtraInfo=None))
             inp_up = INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=0, wScan=code, dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, time=0, dwExtraInfo=None))
             user32.SendInput(1, ctypes.byref(inp_down), ctypes.sizeof(INPUT))
@@ -650,7 +886,7 @@ def set_display_brightness(level: int):
     try:
         val = max(0, min(100, int(level)))
         cmd = f"(Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, {val})"
-        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd], capture_output=True, timeout=3.0)
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd], capture_output=True, timeout=3.0, creationflags=_NO_WINDOW)
         return {"status": "ok", "brightness": val}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -659,7 +895,7 @@ def get_display_brightness():
     """Gets laptop monitor current brightness."""
     try:
         cmd = "(Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightness).CurrentBrightness"
-        res = subprocess.check_output(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd], timeout=3.0, text=True)
+        res = subprocess.check_output(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd], timeout=3.0, text=True, creationflags=_NO_WINDOW)
         return int(res.strip())
     except Exception:
         return None
@@ -707,10 +943,20 @@ def get_system_uptime():
     except Exception:
         return {"uptime_sec": 0, "uptime_hours": 0}
 
-def speak_text(text: str):
-    """Speaks text asynchronously using Windows SAPI."""
+def speak_text(text: str, force: bool = False):
+    """Speaks text asynchronously using Windows SAPI with proper COM initialization (muted in Game Mode)."""
+    if not force and is_game_mode_active():
+        return {
+            "status": "blocked",
+            "blocked_by_game_mode": True,
+            "message": "🎮 Игровой режим: озвучка приглушена чтобы не мешать звуку игры"
+        }
+    com_inited = False
     try:
+        import pythoncom
         import win32com.client
+        pythoncom.CoInitialize()
+        com_inited = True
         speaker = win32com.client.Dispatch("SAPI.SpVoice")
         clean_text = str(text or "").strip()[:500]
         if not clean_text:
@@ -720,6 +966,13 @@ def speak_text(text: str):
         return {"status": "ok", "text": clean_text}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+    finally:
+        if com_inited:
+            try:
+                import pythoncom
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
 def get_disk_stats():
     """Returns disk partitions, usage, total, used, free GB and percentage."""
@@ -741,18 +994,21 @@ def get_disk_stats():
     return disks
 
 def get_network_ping(host: str = "8.8.8.8"):
-    """Measures network ping and online latency to DNS or host."""
-    import subprocess, time, re
+    """Measures network ping and online latency to a strictly validated host."""
+    clean_host = (host or "8.8.8.8").strip()
+    if not _SAFE_HOST_RE.match(clean_host):
+        return {"status": "error", "latency_ms": None, "online": False, "message": "Invalid host", "host": clean_host}
     t0 = time.time()
     try:
         res = subprocess.run(
-            ["ping", "-n", "1", "-w", "1000", host],
-            capture_output=True, text=True, timeout=2.5
+            ["ping", "-n", "1", "-w", "1000", clean_host],
+            capture_output=True, text=True, timeout=2.5,
+            creationflags=_NO_WINDOW
         )
         elapsed = round((time.time() - t0) * 1000, 1)
         m = re.search(r"время[=<](\d+)мс|time[=<](\d+)ms", res.stdout, re.IGNORECASE)
         ms = int(m.group(1) or m.group(2)) if m else int(elapsed)
-        return {"status": "ok", "latency_ms": ms, "online": (res.returncode == 0), "host": host}
+        return {"status": "ok", "latency_ms": ms, "online": (res.returncode == 0), "host": clean_host}
     except Exception as e:
-        return {"status": "error", "latency_ms": None, "online": False, "message": str(e), "host": host}
+        return {"status": "error", "latency_ms": None, "online": False, "message": str(e), "host": clean_host}
 

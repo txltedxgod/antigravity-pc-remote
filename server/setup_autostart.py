@@ -28,7 +28,7 @@ def setup_startup_folder():
     target_vbs = startup_dir / "PCRemoteServer.vbs"
     content = f'''Set WshShell = CreateObject("WScript.Shell")
 WshShell.CurrentDirectory = "{SERVER_DIR}"
-WshShell.Run """{START_VBS}""", 0, False
+WshShell.Run """{START_VBS}""", 1, False
 '''
     target_vbs.write_text(content, encoding="utf-8")
     print(f"✅ Startup VBS written to: {target_vbs}")

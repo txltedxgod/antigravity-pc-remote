@@ -38,9 +38,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.HashMap;
 import java.util.Map;
+import org.json.JSONObject;
 
 public class MainActivity extends Activity {
     private WebView webView;
+    private volatile java.net.ServerSocket oauthServerSocket;
     private static final String APP_HOST = "pcremote.local";
     private static final String APP_URL = "https://" + APP_HOST + "/index.html";
     private ValueCallback<Uri[]> mFilePathCallback;
@@ -131,7 +133,12 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     try {
-                        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                        Uri parsed = Uri.parse(url);
+                        String scheme = parsed.getScheme();
+                        if (scheme == null || (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme))) {
+                            return;
+                        }
+                        Intent intent = new Intent(Intent.ACTION_VIEW, parsed);
                         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                         context.startActivity(intent);
                     } catch (Exception ignored) {}
@@ -208,8 +215,8 @@ public class MainActivity extends Activity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
-        settings.setAllowFileAccess(true);
-        settings.setAllowContentAccess(true);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
@@ -220,7 +227,20 @@ public class MainActivity extends Activity {
             @Override
             public void onPermissionRequest(final PermissionRequest request) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    request.grant(request.getResources());
+                    Uri origin = request.getOrigin();
+                    if (origin != null && APP_HOST.equalsIgnoreCase(origin.getHost())) {
+                        java.util.List<String> allowed = new java.util.ArrayList<String>();
+                        for (String res : request.getResources()) {
+                            if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(res)) {
+                                allowed.add(res);
+                            }
+                        }
+                        if (!allowed.isEmpty()) {
+                            request.grant(allowed.toArray(new String[0]));
+                            return;
+                        }
+                    }
+                    request.deny();
                 }
             }
 
@@ -280,6 +300,9 @@ public class MainActivity extends Activity {
                     if (path.startsWith("/")) {
                         path = path.substring(1);
                     }
+                    if (path.contains("..") || path.contains("\\")) {
+                        return null;
+                    }
                     try {
                         InputStream stream = getAssets().open(path);
                         String mimeType = getMimeType(path);
@@ -298,15 +321,19 @@ public class MainActivity extends Activity {
                 Uri uri = request.getUrl();
                 if (uri != null) {
                     String host = uri.getHost();
+                    String scheme = uri.getScheme();
                     if (host != null && !APP_HOST.equalsIgnoreCase(host)) {
-                        try {
-                            Intent intent = new Intent(Intent.ACTION_VIEW, uri);
-                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                            startActivity(intent);
-                            return true;
-                        } catch (Exception ignored) {
-                            return false;
+                        if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) {
+                            try {
+                                Intent intent = new Intent(Intent.ACTION_VIEW, uri);
+                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                startActivity(intent);
+                                return true;
+                            } catch (Exception ignored) {
+                                return false;
+                            }
                         }
+                        return true;
                     }
                 }
                 return false;
@@ -321,9 +348,11 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 try {
-                    java.net.ServerSocket serverSocket = new java.net.ServerSocket(8765, 5, java.net.InetAddress.getByName("127.0.0.1"));
+                    oauthServerSocket = new java.net.ServerSocket();
+                    oauthServerSocket.setReuseAddress(true);
+                    oauthServerSocket.bind(new java.net.InetSocketAddress(java.net.InetAddress.getByName("127.0.0.1"), 8765), 5);
                     while (!isDestroyed()) {
-                        java.net.Socket socket = serverSocket.accept();
+                        java.net.Socket socket = oauthServerSocket.accept();
                         try {
                             java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(socket.getInputStream()));
                             String line = reader.readLine();
@@ -347,11 +376,12 @@ public class MainActivity extends Activity {
 
                                 if (code != null) {
                                     final String finalCode = java.net.URLDecoder.decode(code, "UTF-8");
+                                    final String safeJsArg = JSONObject.quote(finalCode);
                                     runOnUiThread(new Runnable() {
                                         @Override
                                         public void run() {
                                             if (webView != null) {
-                                                webView.evaluateJavascript("if (typeof handleOAuthCodeReceived === 'function') handleOAuthCodeReceived('" + finalCode + "');", null);
+                                                webView.evaluateJavascript("if (typeof handleOAuthCodeReceived === 'function') handleOAuthCodeReceived(" + safeJsArg + ");", null);
                                             }
                                         }
                                     });
@@ -366,6 +396,15 @@ public class MainActivity extends Activity {
                 } catch (Exception ignored) {}
             }
         }).start();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (oauthServerSocket != null) {
+            try { oauthServerSocket.close(); } catch (Exception ignored) {}
+            oauthServerSocket = null;
+        }
+        super.onDestroy();
     }
 
     private String getMimeType(String path) {

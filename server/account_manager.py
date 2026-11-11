@@ -8,7 +8,10 @@ import ctypes
 import json
 import logging
 import os
+import re
+import secrets
 import subprocess
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -85,6 +88,47 @@ GOOGLE_SCOPES = (
 ACCOUNTS_DIR = Path.home() / ".gemini" / "antigravity" / "accounts"
 ACCOUNTS_DIR.mkdir(parents=True, exist_ok=True)
 
+ALLOWED_REDIRECT_URIS = {
+    "http://127.0.0.1:8765/api/antigravity/auth/callback",
+    "http://localhost:8765/api/antigravity/auth/callback",
+}
+_EMAIL_RE = re.compile(r"^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,63}$")
+_oauth_states = {}
+_oauth_state_lock = threading.Lock()
+
+
+def _resolve_account_path(email: str):
+    """Validates email format and returns a safe profile Path strictly inside ACCOUNTS_DIR."""
+    safe_name = (email or "").strip().lower()
+    if not _EMAIL_RE.match(safe_name):
+        return None, ""
+    candidate = (ACCOUNTS_DIR / f"{safe_name}.json").resolve()
+    if not candidate.is_relative_to(ACCOUNTS_DIR.resolve()):
+        return None, ""
+    return candidate, safe_name
+
+
+def validate_redirect_uri(redirect_uri: str) -> str:
+    """Restricts OAuth redirect_uri to known local callback endpoints."""
+    uri = (redirect_uri or "").strip()
+    if uri in ALLOWED_REDIRECT_URIS:
+        return uri
+    return "http://127.0.0.1:8765/api/antigravity/auth/callback"
+
+
+def verify_and_consume_oauth_state(state: str) -> bool:
+    """Validates and consumes a single-use OAuth CSRF state nonce."""
+    if not state or not isinstance(state, str):
+        return False
+    now = time.time()
+    with _oauth_state_lock:
+        # Prune expired states (> 15 min)
+        expired = [k for k, ts in _oauth_states.items() if now - ts > 900]
+        for k in expired:
+            _oauth_states.pop(k, None)
+        ts = _oauth_states.pop(state, None)
+        return ts is not None and (now - ts <= 900)
+
 def read_active_credential():
     """Reads current active Antigravity credential from Windows Credential Manager."""
     PCREDENTIAL = ctypes.POINTER(CREDENTIAL)
@@ -142,16 +186,21 @@ def update_app_storage_email(email: str):
 
 def stop_antigravity_gracefully():
     """Closes Antigravity cleanly first, force-kills only if hung, and clears stale DevTools port file."""
+    no_win = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     try:
-        subprocess.run("taskkill /IM Antigravity.exe", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["taskkill", "/IM", "Antigravity.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, creationflags=no_win)
         # Wait briefly for clean flush
         for _ in range(5):
             time.sleep(0.5)
-            out = subprocess.check_output("tasklist /FI \"IMAGENAME eq Antigravity.exe\"", shell=True).decode("utf-8", errors="ignore")
+            out = subprocess.check_output(
+                ["tasklist", "/FI", "IMAGENAME eq Antigravity.exe"],
+                timeout=4,
+                creationflags=no_win
+            ).decode("utf-8", errors="ignore")
             if "antigravity.exe" not in out.lower():
                 break
         else:
-            subprocess.run("taskkill /F /IM Antigravity.exe", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["taskkill", "/F", "/IM", "Antigravity.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, creationflags=no_win)
             time.sleep(1.0)
     except Exception as e:
         logger.debug(f"stop_antigravity_gracefully note: {e}")
@@ -165,13 +214,22 @@ def stop_antigravity_gracefully():
             pass
 
 def restart_antigravity():
-    """Gracefully terminates and relaunches Antigravity desktop executable."""
+    """Gracefully terminates and relaunches Antigravity desktop executable with SW_SHOWNORMAL."""
     try:
         stop_antigravity_gracefully()
         exe = Path(os.path.expandvars(r"%LOCALAPPDATA%\Programs\antigravity\Antigravity.exe"))
         if exe.exists():
             flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-            subprocess.Popen([str(exe)], cwd=str(exe.parent), creationflags=flags, close_fds=True)
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 1  # SW_SHOWNORMAL
+            subprocess.Popen(
+                [str(exe)],
+                cwd=str(exe.parent),
+                creationflags=flags,
+                startupinfo=si,
+                close_fds=True
+            )
             return True
     except Exception as e:
         logger.error(f"Failed to restart Antigravity: {e}")
@@ -179,10 +237,9 @@ def restart_antigravity():
 
 def save_account_profile(email: str, data: dict, label: str = ""):
     """Saves an account profile into the accounts directory."""
-    if not email:
+    profile_path, safe_name = _resolve_account_path(email)
+    if not profile_path:
         return False
-    safe_name = email.strip().lower()
-    profile_path = ACCOUNTS_DIR / f"{safe_name}.json"
     save_data = {
         "email": safe_name,
         "label": label or safe_name,
@@ -262,10 +319,9 @@ def switch_account_profile(target_email: str, restart: bool = True):
     5. Updates app_storage.json
     6. Optionally restarts Antigravity IDE
     """
-    target_email = (target_email or "").strip().lower()
-    profile_path = ACCOUNTS_DIR / f"{target_email}.json"
-    if not profile_path.exists():
-        return {"status": "error", "message": f"Профиль {target_email} не найден"}
+    profile_path, target_email = _resolve_account_path(target_email)
+    if not profile_path or not profile_path.exists():
+        return {"status": "error", "message": f"Профиль {target_email or '(некорректный email)'} не найден"}
 
     # Backup current active
     current = read_active_credential()
@@ -309,22 +365,28 @@ def switch_account_profile(target_email: str, restart: bool = True):
 
 def delete_account_profile(email: str):
     """Deletes a saved account profile."""
-    safe_name = (email or "").strip().lower()
-    profile_path = ACCOUNTS_DIR / f"{safe_name}.json"
+    profile_path, safe_name = _resolve_account_path(email)
+    if not profile_path:
+        return {"status": "error", "message": "Некорректный email"}
     if profile_path.exists():
         profile_path.unlink()
         return {"status": "ok", "message": f"Профиль {safe_name} удален"}
     return {"status": "error", "message": "Профиль не найден"}
 
 def get_google_oauth_url(redirect_uri: str = "http://127.0.0.1:8765/api/antigravity/auth/callback"):
-    """Builds authorization URL for adding a new Google account to Antigravity."""
+    """Builds authorization URL with a CSRF state token for adding a Google account to Antigravity."""
+    safe_redirect = validate_redirect_uri(redirect_uri)
+    state = secrets.token_urlsafe(24)
+    with _oauth_state_lock:
+        _oauth_states[state] = time.time()
     params = {
         "client_id": GOOGLE_CLIENT_ID,
-        "redirect_uri": redirect_uri,
+        "redirect_uri": safe_redirect,
         "response_type": "code",
         "scope": GOOGLE_SCOPES,
         "access_type": "offline",
-        "prompt": "consent select_account"
+        "prompt": "consent select_account",
+        "state": state,
     }
     return f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
 
@@ -340,12 +402,13 @@ def extract_code_from_string(text: str) -> str:
 def exchange_auth_code_for_account(code: str, redirect_uri: str = "http://127.0.0.1:8765/api/antigravity/auth/callback"):
     """Exchanges authorization code for Google tokens and saves as active account."""
     clean_code = extract_code_from_string(code)
+    safe_redirect = validate_redirect_uri(redirect_uri)
     post_data = urllib.parse.urlencode({
         "client_id": GOOGLE_CLIENT_ID,
         "client_secret": GOOGLE_CLIENT_SECRET,
         "grant_type": "authorization_code",
         "code": clean_code,
-        "redirect_uri": redirect_uri
+        "redirect_uri": safe_redirect
     }).encode("utf-8")
 
     try:

@@ -4,22 +4,47 @@
  * Screenshot pasting/attaching, truthful live status, PC hardware controls.
  */
 
-// Global Configuration & State
+// Global Configuration & State (placeholders below are injected in-memory only during APK build)
+const BUNDLED_CLOUD_URL = "__PC_REMOTE_BUNDLED_CLOUD_URL__";
+const BUNDLED_BEACON_API_URL = "__PC_REMOTE_BEACON_API_URL__";
+const BUNDLED_BEACON_RAW_URL = "__PC_REMOTE_BEACON_RAW_URL__";
+
+function getBundledCloudUrl() {
+  return BUNDLED_CLOUD_URL.startsWith("__PC_REMOTE_") ? "" : BUNDLED_CLOUD_URL.trim().replace(/\/+$/, "");
+}
+
+function getBeaconApiUrl() {
+  return BUNDLED_BEACON_API_URL.startsWith("__PC_REMOTE_") ? "" : BUNDLED_BEACON_API_URL.trim();
+}
+
+function getBeaconRawUrl() {
+  return BUNDLED_BEACON_RAW_URL.startsWith("__PC_REMOTE_") ? "" : BUNDLED_BEACON_RAW_URL.trim();
+}
+
 let config = {
-  host: localStorage.getItem("pc_remote_host") || (window.location.hostname && window.location.hostname !== "pcremote.local" ? window.location.hostname : "10.0.0.85"),
+  host: localStorage.getItem("pc_remote_host") || ((window.location.hostname && window.location.hostname !== "pcremote.local" && window.location.origin && window.location.origin !== "null") ? window.location.origin : (getBundledCloudUrl() || "10.0.0.85")),
   port: localStorage.getItem("pc_remote_port") || (window.location.port ? window.location.port : "8765"),
   mac: localStorage.getItem("pc_remote_mac") || "A8-3B-76-76-20-8F"
 };
 
 let isConnected = false;
 let activeTab = "tabAntigravity";
-let currentConvId = localStorage.getItem("pc_remote_active_conv_id") || "037cb609-c730-4833-9a14-59662d84e93c";
+let currentConvId = localStorage.getItem("pc_remote_active_conv_id") || "";
 let allConversations = [];
 let lastMessageCount = 0;
 let isSwitchingConv = false;
 let isSendingPrompt = false;
 let currentAgentStatus = "idle";
 let userIsAwaitingResponse = false;
+let lastConvSyncTs = 0;
+
+// Antigravity-style Queued Messages state
+let queuedMessages = [];
+let optimisticQueuedItems = [];
+let queueExpandedOverride = null;
+let prevQueueCount = 0;
+let editingQueueIndex = null;
+let lastQueueRenderKey = "";
 
 // Active screenshot attachment
 let currentAttachedImage = null; // Base64 dataURL
@@ -27,67 +52,138 @@ let currentAttachedFileName = "";
 
 let chatPollTimer = null;
 let statusPollTimer = null;
-let cloudUrl = localStorage.getItem("pc_remote_cloud_url") || "";
+let cloudUrl = localStorage.getItem("pc_remote_cloud_url") || getBundledCloudUrl();
+let lastBeaconFetchTs = 0;
+let beaconDiscoveryInFlight = null;
 
-// Auto-Discovery of Live Cloudflare Tunnel URL from GitHub Repository
-let isDiscoveringCloud = false;
-async function discoverCloudUrl(force = false) {
-  if (isDiscoveringCloud) return cloudUrl;
-  isDiscoveringCloud = true;
+function isValidTunnelUrl(raw) {
+  const clean = (raw || "").trim().replace(/\/+$/, "");
+  return (clean.startsWith("https://") && clean.includes("trycloudflare.com") && !clean.includes("api.trycloudflare.com")) ? clean : "";
+}
+
+function applyConnectionConfig() {
   try {
-    let cleanDecoded = "";
-    // 1. Try raw githubusercontent (no rate limits, fastest)
-    try {
-      const rawRes = await fetch(`https://raw.githubusercontent.com/txltedxgod/antigravity-pc-remote/main/server/tunnel_url.txt?t=${Date.now()}`);
-      if (rawRes.ok) {
-        const text = (await rawRes.text()).trim();
-        if (text.startsWith("https://") && text.includes("trycloudflare.com") && !text.includes("api.trycloudflare.com")) {
-          cleanDecoded = text.replace(/\/+$/, "");
-        }
-      }
-    } catch (rawErr) {}
+    try { localStorage.removeItem("pc_remote_token"); } catch (e) {}
 
-    // 2. Fallback to GitHub API if raw didn't return
-    if (!cleanDecoded) {
-      const res = await fetch(`https://api.github.com/repos/txltedxgod/antigravity-pc-remote/contents/server/tunnel_url.txt?t=${Date.now()}`, {
-        headers: { "Accept": "application/vnd.github.v3+json" }
-      });
+    // 1. If a newly built APK brings a newer bundled tunnel URL, auto-migrate stale trycloudflare hosts
+    const bundledUrl = getBundledCloudUrl();
+    const lastBundled = localStorage.getItem("pc_remote_bundled_cloud_url") || "";
+    if (bundledUrl && bundledUrl !== lastBundled) {
+      localStorage.setItem("pc_remote_bundled_cloud_url", bundledUrl);
+      cloudUrl = bundledUrl;
+      localStorage.setItem("pc_remote_cloud_url", bundledUrl);
+      if (!config.host || config.host === "10.0.0.85" || config.host.includes("trycloudflare.com")) {
+        config.host = bundledUrl;
+        localStorage.setItem("pc_remote_host", bundledUrl);
+      }
+    }
+
+    // 2. If running directly from server web URL (LAN IP or trycloudflare.com), always target this origin
+    const loc = window.location;
+    if (loc && loc.hostname && loc.hostname !== "pcremote.local" && loc.origin && loc.origin !== "null") {
+      config.host = loc.origin;
+      localStorage.setItem("pc_remote_host", loc.origin);
+      if (loc.origin.includes("trycloudflare.com")) {
+        cloudUrl = loc.origin;
+        localStorage.setItem("pc_remote_cloud_url", loc.origin);
+      }
+    }
+
+    // 3. Support optional #host=... override from quick links
+    const rawHash = (loc && loc.hash) ? loc.hash.replace(/^#/, "") : "";
+    if (rawHash) {
+      const params = new URLSearchParams(rawHash);
+      const hashHost = (params.get("host") || "").trim();
+      if (hashHost) {
+        config.host = hashHost;
+        localStorage.setItem("pc_remote_host", hashHost);
+      }
+      if (hashHost && window.history && typeof window.history.replaceState === "function") {
+        window.history.replaceState(null, "", loc.pathname + loc.search);
+      }
+    }
+  } catch (e) {}
+}
+
+// Auto-Discovery of Live Cloudflare Tunnel URL from Private Secret Gist Beacon (fallback to cache/bundled)
+async function _fetchRemoteBeaconUrl() {
+  const apiUrl = getBeaconApiUrl();
+  const rawUrl = getBeaconRawUrl();
+  if (!apiUrl && !rawUrl) return "";
+
+  const fetchWithTimeout = async (url, headers = {}) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4500);
+    try {
+      return await fetch(url, { cache: "no-store", headers, signal: ctrl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  if (apiUrl) {
+    try {
+      const res = await fetchWithTimeout(`${apiUrl}?t=${Date.now()}`, { "Accept": "application/vnd.github+json" });
       if (res.ok) {
         const data = await res.json();
-        if (data && data.content) {
-          const decoded = atob(data.content.replace(/\s/g, "")).trim();
-          if (decoded.startsWith("https://") && decoded.includes("trycloudflare.com") && !decoded.includes("api.trycloudflare.com")) {
-            cleanDecoded = decoded.replace(/\/+$/, "");
-          }
-        }
+        const content = data?.files?.["tunnel_url.txt"]?.content || "";
+        const valid = isValidTunnelUrl(content);
+        if (valid) return valid;
       }
-    }
-
-    if (cleanDecoded) {
-      cloudUrl = cleanDecoded;
-      localStorage.setItem("pc_remote_cloud_url", cleanDecoded);
-
-      // Immediate migration: if stored host is a stale or broken Cloudflare tunnel, update immediately!
-      const hostIsBroken = config.host && (config.host.includes("api.trycloudflare.com") || config.host.includes("trycloudflare.com"));
-      if (hostIsBroken || force || !config.host) {
-        if (config.host !== cleanDecoded) {
-          console.log(`Auto-migrating host: ${config.host} -> ${cleanDecoded}`);
-          config.host = cleanDecoded;
-          localStorage.setItem("pc_remote_host", cleanDecoded);
-          showToast("🌐 Адрес туннеля обновлен с GitHub!");
-        }
-      }
-
-      const disp = document.getElementById("cloudUrlDisplay");
-      if (disp) disp.value = cleanDecoded;
-      return cleanDecoded;
-    }
-  } catch (e) {
-    console.error("Cloud discovery error:", e);
-  } finally {
-    isDiscoveringCloud = false;
+    } catch (e) {}
   }
-  return cloudUrl;
+
+  if (rawUrl) {
+    try {
+      const res = await fetchWithTimeout(`${rawUrl}?t=${Date.now()}`);
+      if (res.ok) {
+        const txt = await res.text();
+        const valid = isValidTunnelUrl(txt);
+        if (valid) return valid;
+      }
+    } catch (e) {}
+  }
+  return "";
+}
+
+async function discoverCloudUrl(force = false, refreshRemote = false) {
+  let discovered = "";
+
+  if (refreshRemote && (getBeaconApiUrl() || getBeaconRawUrl())) {
+    const now = Date.now();
+    if (beaconDiscoveryInFlight) {
+      discovered = await beaconDiscoveryInFlight;
+    } else if (force || (now - lastBeaconFetchTs > 5000)) {
+      lastBeaconFetchTs = now;
+      beaconDiscoveryInFlight = _fetchRemoteBeaconUrl().finally(() => { beaconDiscoveryInFlight = null; });
+      discovered = await beaconDiscoveryInFlight;
+    }
+  }
+
+  const candidates = [
+    discovered,
+    cloudUrl,
+    localStorage.getItem("pc_remote_cloud_url") || "",
+    getBundledCloudUrl()
+  ];
+  for (const raw of candidates) {
+    const valid = isValidTunnelUrl(raw);
+    if (valid) {
+      cloudUrl = valid;
+      localStorage.setItem("pc_remote_cloud_url", valid);
+      const disp = document.getElementById("cloudUrlDisplay");
+      if (disp) disp.value = valid;
+      const shouldAutoMigrate = force || !config.host || (config.host.includes("trycloudflare.com") && config.host !== valid);
+      if (shouldAutoMigrate) {
+        if (config.host !== valid) {
+          config.host = valid;
+          localStorage.setItem("pc_remote_host", valid);
+        }
+      }
+      return valid;
+    }
+  }
+  return "";
 }
 
 // Helpers: Intelligent URL Resolver (LAN IP vs Global Cloudflare Tunnel)
@@ -148,7 +244,24 @@ function showToast(message, duration = 2000) {
   }, duration);
 }
 
-// Generic Fetch Wrapper with Universal Auto-Fallback (Local IP <-> Cloudflare GitHub Sync)
+function openSettingsModal() {
+  const modal = document.getElementById("settingsModal");
+  const hostInput = document.getElementById("serverHostInput");
+  const portInput = document.getElementById("serverPortInput");
+  if (!modal) return;
+  if (hostInput) hostInput.value = config.host;
+  if (portInput) portInput.value = config.port;
+  const box = document.getElementById("cloudTunnelInfoBox");
+  const disp = document.getElementById("cloudUrlDisplay");
+  const bestCloud = cloudUrl || getBundledCloudUrl();
+  if (box && disp && bestCloud) {
+    box.style.display = "block";
+    disp.value = bestCloud;
+  }
+  modal.classList.add("active");
+}
+
+// Generic Fetch Wrapper with Safe Offline Cloudflare Beacon + LAN Fallback
 async function apiCall(path, method = "GET", body = null) {
   const url = getApiUrl(path);
   const opts = {
@@ -160,7 +273,7 @@ async function apiCall(path, method = "GET", body = null) {
   }
 
   const isLocalHost = !config.host.includes("trycloudflare.com");
-  let timeoutMs = isLocalHost ? 6000 : 14000;
+  let timeoutMs = isLocalHost ? 3000 : 12000;
   if (path.includes("/send") || path.includes("/screenshot")) {
     timeoutMs = 45000;
   }
@@ -171,41 +284,83 @@ async function apiCall(path, method = "GET", body = null) {
   try {
     const res = await fetch(url, opts);
     clearTimeout(timeoutId);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      const err = new Error(`HTTP ${res.status}`);
+      err.httpStatus = res.status;
+      throw err;
+    }
     return await res.json();
   } catch (err) {
     clearTimeout(timeoutId);
 
-    // Universal Auto-Recovery: if connection drops or cloud tunnel expired (e.g. traveling in Georgia),
-    // automatically query GitHub for the latest active Cloudflare tunnel URL!
-    try {
-      const freshCloud = await discoverCloudUrl(true);
-      if (freshCloud) {
-        const cleanFresh = freshCloud.replace(/\/+$/, "");
-        const fallbackUrl = `${cleanFresh}${path}`;
-        const retryController = new AbortController();
-        const retryTimer = setTimeout(() => retryController.abort(), 9000);
-        const retryRes = await fetch(fallbackUrl, {
-          method,
-          headers: { "Content-Type": "application/json" },
-          body: body ? JSON.stringify(body) : undefined,
-          signal: retryController.signal
-        });
-        clearTimeout(retryTimer);
+    // Auto-fallback to Secret Gist beacon / Cloudflare / LAN on network errors, GET timeouts, or dead tunnel edge statuses
+    const isHttpError = typeof err.httpStatus === "number";
+    const isCloudDead = isHttpError && !isLocalHost && [404, 502, 503, 520, 521, 522, 524, 530].includes(err.httpStatus);
+    const isDeadTunnelStatus = isCloudDead || (isHttpError && [502, 503, 530].includes(err.httpStatus));
+    const isPostTimeout = method !== "GET" && err.name === "AbortError";
+    if ((isHttpError && !isDeadTunnelStatus) || isPostTimeout || (method !== "GET" && isDeadTunnelStatus)) {
+      throw err;
+    }
 
-        if (retryRes.ok) {
-          if (config.host !== cleanFresh) {
-            config.host = cleanFresh;
-            cloudUrl = cleanFresh;
-            localStorage.setItem("pc_remote_host", cleanFresh);
-            localStorage.setItem("pc_remote_cloud_url", cleanFresh);
-            showToast("🌐 Связь восстановлена через Cloudflare!");
+    // Fallback to fresh Secret Gist beacon URL / cached Cloudflare / cached LAN IP
+    try {
+      const fallbackCandidates = [];
+      const addCandidate = (raw, isCloud, timeout) => {
+        const clean = (raw || "").trim().replace(/\/+$/, "");
+        if (!clean || clean === config.host) return;
+        if (isCloud) {
+          const valid = isValidTunnelUrl(clean);
+          if (valid && valid !== config.host && !fallbackCandidates.some(c => c.host === valid)) {
+            fallbackCandidates.push({ host: valid, url: `${valid}${path}`, isCloud: true, timeout });
           }
-          return await retryRes.json();
+        } else if (!clean.includes("trycloudflare.com") && !fallbackCandidates.some(c => c.host === clean)) {
+          const lanPort = config.port || "8765";
+          const lanOrigin = clean.startsWith("http") ? clean : `http://${clean}:${lanPort}`;
+          fallbackCandidates.push({ host: clean, url: `${lanOrigin}${path}`, isCloud: false, timeout });
+        }
+      };
+
+      const discovered = await discoverCloudUrl(false, true);
+      addCandidate(discovered, true, 9000);
+      addCandidate(cloudUrl, true, 9000);
+      addCandidate(localStorage.getItem("pc_remote_cloud_url") || "", true, 9000);
+      addCandidate(getBundledCloudUrl(), true, 9000);
+
+      const canTryLanHttp = !window.location || window.location.protocol !== "https:" || window.location.hostname === "pcremote.local" || !!window.AndroidBridge;
+      const savedLanIp = (localStorage.getItem("pc_remote_lan_ip") || "").trim();
+      if (canTryLanHttp && savedLanIp) {
+        addCandidate(savedLanIp, false, 2500);
+      }
+
+      for (const cand of fallbackCandidates) {
+        const retryController = new AbortController();
+        const retryTimer = setTimeout(() => retryController.abort(), cand.timeout);
+        try {
+          const retryRes = await fetch(cand.url, {
+            method,
+            headers: { "Content-Type": "application/json" },
+            body: body ? JSON.stringify(body) : undefined,
+            signal: retryController.signal
+          });
+          clearTimeout(retryTimer);
+          if (retryRes.ok) {
+            config.host = cand.host;
+            localStorage.setItem("pc_remote_host", cand.host);
+            if (cand.isCloud) {
+              cloudUrl = cand.host;
+              localStorage.setItem("pc_remote_cloud_url", cand.host);
+              showToast("🌐 Связь восстановлена через Cloudflare!");
+            } else {
+              showToast("📶 Связь восстановлена по локальному Wi-Fi!");
+            }
+            return await retryRes.json();
+          }
+        } catch (retryErr) {
+          clearTimeout(retryTimer);
         }
       }
     } catch (fallbackErr) {
-      console.warn("Auto-recovery via GitHub Cloudflare failed:", fallbackErr);
+      console.warn("Connection fallback failed:", fallbackErr);
     }
 
     throw err;
@@ -282,7 +437,7 @@ function renderMarkdown(md) {
         <pre style="margin: 0; padding: 10px; background: #141416; border-radius: 0 0 6px 6px; overflow-x: auto;"><code>${escapedCode}</code></pre>
       </div>
     `;
-    text = text.replace(placeholder, htmlBlock);
+    text = text.replace(placeholder, () => htmlBlock);
   });
 
   return text;
@@ -364,7 +519,15 @@ document.addEventListener("click", (e) => {
 });
 
 // --- SCREENSHOT & IMAGE ATTACHMENT LOGIC ---
+function isSafeImageDataUrl(dataUrl) {
+  return typeof dataUrl === "string" && /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/i.test(dataUrl);
+}
+
 function attachBase64Image(dataUrl, fileName = "screenshot.jpg") {
+  if (!isSafeImageDataUrl(dataUrl)) {
+    showToast("Некорректный формат изображения");
+    return;
+  }
   currentAttachedImage = dataUrl;
   currentAttachedFileName = fileName;
 
@@ -973,6 +1136,265 @@ function scrollChatToBottom(force = false) {
   setTimeout(doScroll, 300);
 }
 
+// --- ANTIGRAVITY-STYLE QUEUED MESSAGES UI ---
+function getEffectiveQueuedMessages() {
+  const now = Date.now();
+  optimisticQueuedItems = optimisticQueuedItems.filter(it => now - it.ts < 5500);
+
+  const live = Array.isArray(queuedMessages) ? queuedMessages.map((m, idx) => ({
+    index: typeof m.index === "number" ? m.index : idx,
+    text: String(m.text || ""),
+    has_media: !!m.has_media,
+    can_edit: m.can_edit !== false,
+    can_delete: m.can_delete !== false,
+    can_send_now: m.can_send_now !== false,
+    optimistic: false
+  })) : [];
+
+  // Reconcile optimistic items with live CDP queue items
+  const liveTexts = new Set(live.map(m => m.text.trim()));
+  const remainingOpt = [];
+  for (const opt of optimisticQueuedItems) {
+    const clean = (opt.text || "").trim();
+    if (clean && liveTexts.has(clean)) {
+      continue;
+    }
+    if (!clean && live.some(m => m.has_media)) {
+      continue;
+    }
+    remainingOpt.push({
+      index: live.length + remainingOpt.length,
+      text: opt.text,
+      has_media: !!opt.has_media,
+      can_edit: false,
+      can_delete: false,
+      can_send_now: false,
+      optimistic: true,
+      isNew: !!opt.isNew
+    });
+  }
+  return [...live, ...remainingOpt];
+}
+
+function renderQueuedMessages(forceRender = false) {
+  const card = document.getElementById("queuedMessagesCard");
+  const listEl = document.getElementById("queuedMessagesList");
+  const badgeEl = document.getElementById("queuedCountBadge");
+  const subEl = document.getElementById("queuedSubtitle");
+  if (!card || !listEl) return;
+
+  const items = getEffectiveQueuedMessages();
+  if (items.length === 0) {
+    card.style.display = "none";
+    card.classList.remove("expanded");
+    listEl.innerHTML = "";
+    queueExpandedOverride = null;
+    prevQueueCount = 0;
+    editingQueueIndex = null;
+    lastQueueRenderKey = "";
+    return;
+  }
+
+  // Auto-collapse when queue grows past 2 messages unless already expanded at >2
+  if (prevQueueCount <= 2 && items.length > 2) {
+    queueExpandedOverride = null;
+  }
+  prevQueueCount = items.length;
+
+  const isExpanded = (queueExpandedOverride !== null)
+    ? queueExpandedOverride
+    : (items.length <= 2);
+
+  card.style.display = "flex";
+  card.classList.toggle("expanded", isExpanded);
+  if (badgeEl) badgeEl.textContent = String(items.length);
+
+  if (subEl) {
+    if (isExpanded) {
+      subEl.textContent = "Отправятся после ответа";
+    } else {
+      const firstPreview = (items[0].text || (items[0].has_media ? "Скриншот" : "Сообщение")).trim();
+      const short = firstPreview.length > 28 ? firstPreview.slice(0, 28) + "…" : firstPreview;
+      subEl.textContent = `Свёрнуто (${short}) • Нажми ▾`;
+    }
+  }
+
+  // Never clobber active inline edit box during background 1.8s polling
+  if (editingQueueIndex !== null && !forceRender) {
+    return;
+  }
+
+  const renderKey = JSON.stringify(items.map(i => [i.index, i.text, i.has_media, i.optimistic])) + `|${editingQueueIndex}|${isExpanded}`;
+  if (!forceRender && renderKey === lastQueueRenderKey) {
+    return;
+  }
+  lastQueueRenderKey = renderKey;
+
+  listEl.innerHTML = "";
+  items.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "queued-msg-row" + (item.isNew ? " fly-up" : "");
+
+    if (editingQueueIndex === item.index && !item.optimistic) {
+      const editWrap = document.createElement("div");
+      editWrap.className = "queued-edit-row";
+
+      const ta = document.createElement("textarea");
+      ta.className = "queued-edit-input";
+      ta.value = item.text;
+      ta.placeholder = "Изменить текст сообщения...";
+
+      const btns = document.createElement("div");
+      btns.className = "queued-edit-buttons";
+
+      const btnCancel = document.createElement("button");
+      btnCancel.type = "button";
+      btnCancel.className = "btn-queue-edit-cancel";
+      btnCancel.textContent = "Отмена";
+      btnCancel.addEventListener("click", () => {
+        haptic(15);
+        editingQueueIndex = null;
+        renderQueuedMessages(true);
+      });
+
+      const btnSave = document.createElement("button");
+      btnSave.type = "button";
+      btnSave.className = "btn-queue-edit-save";
+      btnSave.textContent = "Сохранить";
+      btnSave.addEventListener("click", async () => {
+        const updated = ta.value.trim();
+        if (!updated) {
+          showToast("Текст не может быть пустым");
+          return;
+        }
+        btnSave.disabled = true;
+        btnSave.textContent = "...";
+        await performQueueAction("edit", item.index, item.text, updated);
+      });
+
+      ta.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          btnSave.click();
+        } else if (e.key === "Escape") {
+          btnCancel.click();
+        }
+      });
+
+      btns.appendChild(btnCancel);
+      btns.appendChild(btnSave);
+      editWrap.appendChild(ta);
+      editWrap.appendChild(btns);
+      row.appendChild(editWrap);
+      listEl.appendChild(row);
+      setTimeout(() => {
+        ta.focus();
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+      }, 20);
+      return;
+    }
+
+    const content = document.createElement("div");
+    content.className = "queued-msg-content";
+    if (item.has_media) {
+      const mBadge = document.createElement("span");
+      mBadge.className = "queued-msg-media-badge";
+      mBadge.textContent = "📎";
+      content.appendChild(mBadge);
+    }
+    const textEl = document.createElement("span");
+    textEl.className = "queued-msg-text" + (item.text ? "" : " empty");
+    textEl.textContent = item.text || "Изображение без текста";
+    content.appendChild(textEl);
+
+    const actions = document.createElement("div");
+    actions.className = "queued-msg-actions";
+
+    const btnSendNow = document.createElement("button");
+    btnSendNow.type = "button";
+    btnSendNow.className = "btn-queue-action send-now";
+    btnSendNow.title = "Отправить сейчас";
+    btnSendNow.disabled = item.optimistic || !item.can_send_now;
+    btnSendNow.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>`;
+    btnSendNow.addEventListener("click", () => {
+      haptic(30);
+      performQueueAction("send_now", item.index, item.text);
+    });
+
+    const btnEdit = document.createElement("button");
+    btnEdit.type = "button";
+    btnEdit.className = "btn-queue-action edit";
+    btnEdit.title = "Изменить";
+    btnEdit.disabled = item.optimistic || !item.can_edit;
+    btnEdit.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>`;
+    btnEdit.addEventListener("click", () => {
+      haptic(20);
+      editingQueueIndex = item.index;
+      queueExpandedOverride = true;
+      renderQueuedMessages(true);
+    });
+
+    const btnDel = document.createElement("button");
+    btnDel.type = "button";
+    btnDel.className = "btn-queue-action delete";
+    btnDel.title = "Удалить из очереди";
+    btnDel.disabled = item.optimistic || !item.can_delete;
+    btnDel.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg>`;
+    btnDel.addEventListener("click", () => {
+      haptic(25);
+      performQueueAction("delete", item.index, item.text);
+    });
+
+    actions.appendChild(btnSendNow);
+    actions.appendChild(btnEdit);
+    actions.appendChild(btnDel);
+
+    row.appendChild(content);
+    row.appendChild(actions);
+    listEl.appendChild(row);
+  });
+}
+
+async function performQueueAction(action, index, text, newText = "") {
+  const endpointMap = {
+    delete: "/api/antigravity/queue/delete",
+    send_now: "/api/antigravity/queue/send_now",
+    edit: "/api/antigravity/queue/edit"
+  };
+  const ep = endpointMap[action];
+  if (!ep) return;
+
+  try {
+    const payload = {
+      index,
+      text,
+      conversation_id: currentConvId || null
+    };
+    if (action === "edit") {
+      payload.new_text = newText;
+    }
+    const res = await apiCall(ep, "POST", payload);
+    if (res && res.status === "ok") {
+      editingQueueIndex = null;
+      queuedMessages = Array.isArray(res.queued_messages) ? res.queued_messages : [];
+      renderQueuedMessages(true);
+      if (action === "delete") showToast("🗑️ Сообщение удалено из очереди");
+      else if (action === "send_now") {
+        userIsAwaitingResponse = true;
+        showToast("⚡ Сообщение отправлено сейчас!");
+      } else if (action === "edit") showToast("✏️ Сообщение в очереди обновлено");
+      setTimeout(() => fetchChat(false), 450);
+    } else {
+      showToast("Ошибка: " + (res?.message || "не удалось выполнить действие"));
+      editingQueueIndex = null;
+      await fetchChat(false);
+    }
+  } catch (e) {
+    showToast("Ошибка очереди: " + e.message);
+    editingQueueIndex = null;
+  }
+}
+
 // --- CHAT LOGIC ---
 async function fetchChat(autoScroll = true) {
   const feed = document.getElementById("chatFeed");
@@ -1000,23 +1422,31 @@ async function fetchChat(autoScroll = true) {
     if (currentConvId === "new") {
       if (res.conversation_id && res.conversation_id !== "new") {
         currentConvId = res.conversation_id;
+        localStorage.setItem("pc_remote_active_conv_id", currentConvId);
         updateActiveConvTitle(currentConvId);
         loadConversations();
       } else {
         if (emptyState) emptyState.style.display = "flex";
         feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
         lastMessageCount = 0;
+        queuedMessages = Array.isArray(res.queued_messages) ? res.queued_messages : [];
+        renderQueuedMessages();
         if (activityBanner) activityBanner.style.display = "none";
         return;
       }
     } else if (res.conversation_id && !currentConvId) {
       if (res.conversation_id !== "new") {
         currentConvId = res.conversation_id;
+        localStorage.setItem("pc_remote_active_conv_id", currentConvId);
         updateActiveConvTitle(currentConvId);
       }
     } else if (currentConvId && currentConvId !== "new") {
       updateActiveConvTitle(currentConvId);
     }
+
+    // Sync queued messages card from Antigravity live DOM
+    queuedMessages = Array.isArray(res.queued_messages) ? res.queued_messages : [];
+    renderQueuedMessages();
 
     // Update Agent Live Status & Task Completion Notification
     const agentStatus = res.agent_status || "idle";
@@ -1069,16 +1499,16 @@ async function fetchChat(autoScroll = true) {
 
     const isNearBottom = (feed.scrollHeight - feed.scrollTop - feed.clientHeight) < 140;
 
-    // Only re-render if count or last message changed
-    if (messages.length !== lastMessageCount || isSendingPrompt || isSwitchingConv) {
+    // Only re-render if count changed or switching conv (don't clobber optimistic send while in-flight)
+    if (messages.length !== lastMessageCount || isSwitchingConv) {
       lastMessageCount = messages.length;
-      isSendingPrompt = false;
 
       feed.querySelectorAll(".chat-msg").forEach(m => m.remove());
 
       messages.forEach(msg => {
         const bubble = document.createElement("div");
-        bubble.className = `chat-msg msg-${msg.role}`;
+        const safeRole = msg.role === "user" ? "user" : "assistant";
+        bubble.className = `chat-msg msg-${safeRole}`;
         
         let timeStr = "";
         if (msg.created_at) {
@@ -1088,7 +1518,7 @@ async function fetchChat(autoScroll = true) {
           } catch (e) {}
         }
 
-        if (msg.role === "user") {
+        if (safeRole === "user") {
           let imgTag = "";
           if (msg.has_image) {
             imgTag = `<div style="font-size: 11px; color: #a1a1aa; margin-bottom: 4px; display: flex; align-items: center; gap: 4px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg> Скриншот прикреплен</div>`;
@@ -1153,23 +1583,30 @@ async function sendPrompt() {
 
   const isAgentBusy = (currentAgentStatus === "executing" || currentAgentStatus === "thinking");
 
-  // Optimistic UI: append user message to feed immediately
   const feed = document.getElementById("chatFeed");
   const emptyState = document.getElementById("chatEmptyState");
   if (emptyState) emptyState.style.display = "none";
 
-  if (feed) {
+  if (isAgentBusy) {
+    // Antigravity-style: fly message UP into the Queued Messages card above the composer
+    optimisticQueuedItems.push({
+      text: text || "Скриншот",
+      has_media: !!attachedImg,
+      ts: Date.now(),
+      isNew: true
+    });
+    renderQueuedMessages(true);
+  } else if (feed) {
+    // Optimistic UI: append user message to feed immediately when agent is idle
     const bubble = document.createElement("div");
     bubble.className = "chat-msg msg-user";
     const nowStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     let imageHtml = "";
-    if (attachedImg) {
+    if (attachedImg && isSafeImageDataUrl(attachedImg)) {
       imageHtml = `<img class="msg-attachment-thumb" src="${attachedImg}" alt="Attached Screenshot">`;
     }
-    const queuedHtml = isAgentBusy ? `<div class="msg-queued-badge"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg> В очереди</div>` : "";
     bubble.innerHTML = `
       <div class="msg-bubble-user">
-        ${queuedHtml}
         ${imageHtml}
         ${text ? `<div>${escapeHtml(text)}</div>` : ""}
       </div>
@@ -1203,8 +1640,13 @@ async function sendPrompt() {
 
     if (res.status === "ok") {
       userIsAwaitingResponse = true;
+      if (Array.isArray(res.queued_messages) && res.queued_messages.length > 0) {
+        queuedMessages = res.queued_messages;
+        optimisticQueuedItems = [];
+        renderQueuedMessages(true);
+      }
       if (isAgentBusy) {
-        showToast("⏳ Сообщение добавлено в очередь Antigravity!");
+        showToast("⏳ Сообщение в очереди Antigravity!");
       } else {
         showToast("✨ Запрос отправлен в IDE!");
       }
@@ -1220,13 +1662,18 @@ async function sendPrompt() {
         }
       }
     } else {
+      optimisticQueuedItems = [];
+      renderQueuedMessages(true);
       showToast("Ошибка: " + (res.message || "Не удалось отправить"));
       if (activityBanner) activityBanner.style.display = "none";
     }
   } catch (e) {
+    optimisticQueuedItems = [];
+    renderQueuedMessages(true);
     showToast("Ошибка связи: " + (e.message || "Таймаут соединения"));
     if (activityBanner) activityBanner.style.display = "none";
   } finally {
+    isSendingPrompt = false;
     btn.disabled = false;
     updateSendButtonState();
   }
@@ -1451,6 +1898,11 @@ async function switchConversation(convId, optTitle) {
   isSwitchingConv = true;
   userIsAwaitingResponse = false;
   lastMessageCount = 0;
+  queuedMessages = [];
+  optimisticQueuedItems = [];
+  queueExpandedOverride = null;
+  editingQueueIndex = null;
+  renderQueuedMessages(true);
 
   const feed = document.getElementById("chatFeed");
   const emptyState = document.getElementById("chatEmptyState");
@@ -1481,6 +1933,11 @@ async function startNewConversation() {
   userIsAwaitingResponse = false;
   currentConvId = "new";
   lastMessageCount = 0;
+  queuedMessages = [];
+  optimisticQueuedItems = [];
+  queueExpandedOverride = null;
+  editingQueueIndex = null;
+  renderQueuedMessages(true);
   updateActiveConvTitle("new");
 
   const feed = document.getElementById("chatFeed");
@@ -1546,6 +2003,11 @@ async function pollStatus() {
       updateKeepAwakeUI(pcStatus.keep_awake);
     }
 
+    // Game Mode Shield State
+    if (pcStatus.game_mode) {
+      updateGameModeUI(pcStatus.game_mode);
+    }
+
     // Disks Telemetry (C: & D:)
     if (pcStatus.disks && Array.isArray(pcStatus.disks)) {
       updateDisksUI(pcStatus.disks);
@@ -1585,6 +2047,16 @@ async function pollStatus() {
       }
     }
 
+    // Save LAN IP for bidirectional offline fallback (Cloudflare <-> LAN)
+    if (pcStatus.lan_ip) {
+      localStorage.setItem("pc_remote_lan_ip", pcStatus.lan_ip);
+    }
+
+    // Network Guard quick badge update
+    if (pcStatus.network) {
+      updateNetworkQuickUI(pcStatus.network, pcStatus.cloud_url);
+    }
+
     // Cloudflare Tunnel URL auto-detection & sync
     if (pcStatus.cloud_url) {
       cloudUrl = pcStatus.cloud_url;
@@ -1608,7 +2080,11 @@ async function pollStatus() {
     if (agRes && agRes.connected) {
       if (ideClosedBanner) ideClosedBanner.style.display = "none";
       if (controlsIdeLabel) controlsIdeLabel.textContent = "✅ Antigravity активен (Фокус / Поднять)";
-      loadConversations();
+      const convInterval = isGameModeActive ? 30000 : 15000;
+      if (Date.now() - lastConvSyncTs > convInterval || allConversations.length === 0) {
+        lastConvSyncTs = Date.now();
+        loadConversations();
+      }
     } else {
       if (ideClosedBanner) ideClosedBanner.style.display = "flex";
       if (controlsIdeLabel) controlsIdeLabel.textContent = "🚀 Запустить Antigravity IDE (Сейчас закрыт)";
@@ -1644,6 +2120,83 @@ function setConnectionState(online) {
   }
 }
 
+let isGameModeActive = false;
+
+function updateGameModeUI(gm) {
+  if (!gm) return;
+  isGameModeActive = !!gm.active;
+  const pill = document.getElementById("headerGameModePill");
+  const pillName = document.getElementById("headerGameModeName");
+  const badge = document.getElementById("gameModeStatusBadge");
+  const desc = document.getElementById("gameModeDesc");
+
+  if (pill) {
+    pill.style.display = gm.active ? "inline-flex" : "none";
+    if (pillName) {
+      pillName.textContent = gm.detected_game ? gm.detected_game.replace(/\.exe$/i, "") : "Игра";
+    }
+  }
+
+  document.querySelectorAll(".game-mode-btn[data-gamemode]").forEach(btn => {
+    btn.classList.toggle("active", btn.getAttribute("data-gamemode") === gm.mode);
+  });
+
+  if (badge) {
+    if (gm.active) {
+      badge.textContent = gm.detected_game ? `🟢 ${gm.detected_game}` : "🟢 ЗАЩИТА ВКЛ";
+      badge.style.color = "#A855F7";
+    } else if (gm.mode === "off") {
+      badge.textContent = "⛔ ВЫКЛ";
+      badge.style.color = "var(--text-muted)";
+    } else {
+      badge.textContent = "⚪ Авто";
+      badge.style.color = "var(--text-muted)";
+    }
+  }
+
+  if (desc) {
+    if (gm.active) {
+      desc.textContent = gm.detected_game
+        ? `Защита активна для ${gm.detected_game}: чат с ИИ, громкость, музыка и терминал работают бесшумно без Alt+Tab и просадок FPS.`
+        : "Принудительная защита активна: чат с ИИ, громкость и музыка работают без Alt+Tab, фокус окон и тачпад приглушены.";
+    } else {
+      desc.textContent = "Авто-защита: громкость, музыка, яркость, терминал и чат с ИИ работают бесшумно в фоне — без Alt+Tab, кражи фокуса, фризов FPS и случайных тапов по тачпаду.";
+    }
+  }
+}
+
+function initGameModeControls() {
+  const pill = document.getElementById("headerGameModePill");
+  if (pill) {
+    pill.addEventListener("click", () => {
+      haptic(15);
+      const navBtn = document.querySelector('.nav-item[data-tab="tabControls"]');
+      if (navBtn) navBtn.click();
+    });
+  }
+
+  document.querySelectorAll(".game-mode-btn[data-gamemode]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const mode = btn.getAttribute("data-gamemode");
+      haptic(25);
+      try {
+        const res = await apiCall("/api/pc/gamemode", "POST", { mode });
+        if (res && res.status === "ok") {
+          updateGameModeUI(res);
+          const msgs = {
+            auto: "🤖 Игровой режим: АВТО (включится сам при запуске игры)",
+            on: "🎮 Игровой режим: ВКЛ (игра защищена от Alt+Tab и фризов)",
+            off: "⛔ Игровой режим: ВЫКЛ (все действия без ограничений)"
+          };
+          showToast(msgs[mode] || "Режим обновлён");
+        }
+      } catch (e) {
+        showToast("Ошибка настройки Игрового режима");
+      }
+    });
+  });
+}
+
 // PC Action Trigger
 async function triggerAction(action, extra = {}) {
   haptic(25);
@@ -1652,6 +2205,8 @@ async function triggerAction(action, extra = {}) {
     const res = await apiCall("/api/pc/action", "POST", body);
     if (res.status === "ok") {
       showToast(`Выполнено: ${action}`);
+    } else if (res.blocked_by_game_mode) {
+      showToast(res.message || "🎮 Заблокировано Игровым режимом");
     } else {
       showToast(`Ошибка: ${res.message || action}`);
     }
@@ -1770,6 +2325,7 @@ function setupEvents() {
         fetchProcesses();
         fetchAccounts();
         fetchQuotaAndPlan();
+        refreshNetworkStatus();
       } else if (targetId === "tabApps") {
         fetchActiveWindows();
         if (!currentFsPath) loadFsDirectory("");
@@ -1794,6 +2350,20 @@ function setupEvents() {
         e.preventDefault();
         sendPrompt();
       }
+    });
+  }
+
+  // Queued Messages Card Toggle Arrow
+  const queuedHeader = document.getElementById("queuedCardHeader");
+  if (queuedHeader) {
+    queuedHeader.addEventListener("click", () => {
+      haptic(15);
+      const items = getEffectiveQueuedMessages();
+      const currentlyExpanded = (queueExpandedOverride !== null)
+        ? queueExpandedOverride
+        : (items.length <= 2);
+      queueExpandedOverride = !currentlyExpanded;
+      renderQueuedMessages(true);
     });
   }
 
@@ -2011,21 +2581,23 @@ function setupEvents() {
   const btnControlsLaunchIde = document.getElementById("btnControlsLaunchIde");
   if (btnControlsLaunchIde) btnControlsLaunchIde.addEventListener("click", () => triggerLaunchAntigravity(false, btnControlsLaunchIde));
 
-  // Connect via Cloudflare from offline banner
+  // Connect via live Secret Gist Beacon / Cloudflare URL from offline banner
   const btnConnectCloud = document.getElementById("btnConnectCloud");
   if (btnConnectCloud) {
     btnConnectCloud.addEventListener("click", async () => {
       haptic(30);
-      showToast("🔍 Ищу ПК через Cloudflare...");
-      const url = await discoverCloudUrl(true);
+      showToast("🔍 Ищу активный адрес ПК...");
+      const url = await discoverCloudUrl(true, true);
       if (url) {
         config.host = url;
         localStorage.setItem("pc_remote_host", url);
-        showToast("🌐 Найдено! Подключаюсь...");
+        showToast("🌐 Подключаюсь через Cloudflare...");
         pollStatus();
+        loadConversations();
         fetchChat(true);
       } else {
-        showToast("Не удалось обнаружить Cloudflare URL в сети");
+        showToast("Вставь Cloudflare URL из Telegram в Настройках");
+        openSettingsModal(false);
       }
     });
   }
@@ -2173,15 +2745,7 @@ function setupEvents() {
   if (btnSettings && modal) {
     btnSettings.addEventListener("click", () => {
       haptic(20);
-      if (hostInput) hostInput.value = config.host;
-      if (portInput) portInput.value = config.port;
-      const box = document.getElementById("cloudTunnelInfoBox");
-      const disp = document.getElementById("cloudUrlDisplay");
-      if (box && disp && cloudUrl) {
-        box.style.display = "block";
-        disp.value = cloudUrl;
-      }
-      modal.classList.add("active");
+      openSettingsModal();
     });
   }
 
@@ -2197,20 +2761,17 @@ function setupEvents() {
     });
   }
 
-  const btnAutoDiscover = document.getElementById("btnAutoDiscoverCloud");
-  if (btnAutoDiscover) {
-    btnAutoDiscover.addEventListener("click", async () => {
+  const btnDownloadApk = document.getElementById("btnDownloadApkFromWeb");
+  if (btnDownloadApk) {
+    btnDownloadApk.addEventListener("click", () => {
       haptic(25);
-      showToast("🔍 Поиск Cloudflare URL на GitHub...");
-      const url = await discoverCloudUrl(true);
-      if (url) {
-        const disp = document.getElementById("cloudUrlDisplay");
-        if (disp) disp.value = url;
-        if (hostInput) hostInput.value = url;
-        showToast("✅ URL найден и вставлен в поле!");
+      const apkUrl = getApiUrl("/download/apk");
+      if (window.AndroidBridge && typeof window.AndroidBridge.openInExternalBrowser === "function") {
+        window.AndroidBridge.openInExternalBrowser(apkUrl);
       } else {
-        showToast("URL не найден в репозитории");
+        window.location.href = apkUrl;
       }
+      showToast("📥 Загрузка PCRemote.apk началась!");
     });
   }
 
@@ -2237,6 +2798,7 @@ function setupEvents() {
       modal.classList.remove("active");
       showToast("Настройки сохранены. Проверка связи...");
       pollStatus();
+      loadConversations();
       fetchChat(true);
     });
   }
@@ -2394,6 +2956,7 @@ function initTrackpad() {
   if (!surface) return;
 
   let lastX = 0, lastY = 0;
+  let pendingDx = 0, pendingDy = 0;
   let isTouching = false;
   let moved = false;
   let throttleTimer = null;
@@ -2402,6 +2965,8 @@ function initTrackpad() {
     if (e.touches.length === 1) {
       isTouching = true;
       moved = false;
+      pendingDx = 0;
+      pendingDy = 0;
       lastX = e.touches[0].clientX;
       lastY = e.touches[0].clientY;
       surface.classList.add("active");
@@ -2420,20 +2985,49 @@ function initTrackpad() {
 
     if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
       moved = true;
+      pendingDx += dx;
+      pendingDy += dy;
+      const isForceInput = () => !!document.getElementById("chkForceInputInGame")?.checked;
+      let lastGameBlockToastTs = 0;
+      const sendMouseCmd = (payload) => {
+        const body = Object.assign({}, payload, { force: isForceInput() });
+        apiCall("/api/pc/mouse", "POST", body).then(r => {
+          if (r && r.blocked_by_game_mode && Date.now() - lastGameBlockToastTs > 2500) {
+            lastGameBlockToastTs = Date.now();
+            showToast(r.message || "🎮 Игровой режим: мышь приглушена");
+          }
+        }).catch(() => {});
+      };
+
       if (!throttleTimer) {
         throttleTimer = setTimeout(() => {
           throttleTimer = null;
-          apiCall("/api/pc/mouse", "POST", { action: "move", dx, dy }).catch(() => {});
+          const sendDx = pendingDx;
+          const sendDy = pendingDy;
+          pendingDx = 0;
+          pendingDy = 0;
+          if (sendDx !== 0 || sendDy !== 0) {
+            sendMouseCmd({ action: "move", dx: sendDx, dy: sendDy });
+          }
         }, 25);
       }
     }
   }, { passive: false });
 
+  const isForceInputClick = () => !!document.getElementById("chkForceInputInGame")?.checked;
+  const sendTrackClick = (btnType) => {
+    apiCall("/api/pc/mouse", "POST", { action: "click", button: btnType, force: isForceInputClick() }).then(r => {
+      if (r && r.blocked_by_game_mode) {
+        showToast(r.message || "🎮 Игровой режим: клик заблокирован");
+      }
+    }).catch(() => {});
+  };
+
   surface.addEventListener("touchend", () => {
     surface.classList.remove("active");
     if (isTouching && !moved) {
       haptic(20);
-      apiCall("/api/pc/mouse", "POST", { action: "click", button: "left" }).catch(() => {});
+      sendTrackClick("left");
     }
     isTouching = false;
   });
@@ -2441,21 +3035,21 @@ function initTrackpad() {
   if (btnLeft) {
     btnLeft.addEventListener("click", () => {
       haptic(15);
-      apiCall("/api/pc/mouse", "POST", { action: "click", button: "left" }).catch(() => {});
+      sendTrackClick("left");
     });
   }
 
   if (btnDouble) {
     btnDouble.addEventListener("click", () => {
       haptic(25);
-      apiCall("/api/pc/mouse", "POST", { action: "click", button: "double" }).catch(() => {});
+      sendTrackClick("double");
     });
   }
 
   if (btnRight) {
     btnRight.addEventListener("click", () => {
       haptic(20);
-      apiCall("/api/pc/mouse", "POST", { action: "click", button: "right" }).catch(() => {});
+      sendTrackClick("right");
     });
   }
 
@@ -2464,7 +3058,7 @@ function initTrackpad() {
     btn.addEventListener("click", () => {
       haptic(20);
       const key = btn.getAttribute("data-key");
-      triggerAction("hotkey", { key, name: key });
+      triggerAction("hotkey", { key, name: key, force: isForceInputClick() });
     });
   });
 
@@ -2473,9 +3067,13 @@ function initTrackpad() {
     const text = directInput ? directInput.value : "";
     if (!text) return;
     haptic(25);
-    apiCall("/api/pc/type", "POST", { text }).then(() => {
-      showToast("✓ Текст напечатан в окно ПК");
-      if (directInput) directInput.value = "";
+    apiCall("/api/pc/type", "POST", { text, force: isForceInputClick() }).then(r => {
+      if (r && r.blocked_by_game_mode) {
+        showToast(r.message || "🎮 Игровой режим: ввод текста заблокирован");
+      } else {
+        showToast("✓ Текст напечатан в окно ПК");
+        if (directInput) directInput.value = "";
+      }
     }).catch(e => {
       showToast("Ошибка ввода: " + e.message);
     });
@@ -2614,7 +3212,12 @@ async function loadFsDirectory(path = "") {
         if (it.is_dir) {
           loadFsDirectory(it.path);
         } else {
-          window.open(`${config.host}:${config.port}/api/fs/download?path=${encodeURIComponent(it.path)}`, "_blank");
+          const dlUrl = getApiUrl(`/api/fs/download?path=${encodeURIComponent(it.path)}`);
+          if (window.AndroidBridge && typeof window.AndroidBridge.openInExternalBrowser === "function") {
+            window.AndroidBridge.openInExternalBrowser(dlUrl);
+          } else {
+            window.open(dlUrl, "_blank");
+          }
         }
       });
 
@@ -2781,6 +3384,183 @@ function initCaffeineControls() {
   });
 }
 
+// --- 8B. NETWORK GUARD, WI-FI SWITCHER & TUNNEL RECOVERY ---
+let isNetworkAutoGuardActive = true;
+function updateAutoGuardUI(enabled) {
+  isNetworkAutoGuardActive = !!enabled;
+  const btn = document.getElementById("btnToggleAutoGuard");
+  const label = document.getElementById("autoGuardLabel");
+  if (btn) btn.classList.toggle("active", isNetworkAutoGuardActive);
+  if (label) {
+    label.textContent = isNetworkAutoGuardActive ? "🛡️ Авто-реконнект: ВКЛ" : "🛡️ Авто-реконнект: ВЫКЛ";
+  }
+}
+
+function updateNetworkQuickUI(netInfo, currentCloudUrl = null) {
+  if (!netInfo) return;
+  const badge = document.getElementById("networkCardBadge");
+  const tunnelBadge = document.getElementById("networkTunnelBadge");
+  const eventLine = document.getElementById("networkEventLine");
+
+  const reconnecting = !!(netInfo.network_reconnecting || netInfo.is_reconnecting);
+  const online = netInfo.internet_online !== undefined ? !!netInfo.internet_online : !!netInfo.online;
+  const profile = netInfo.wifi_profile || "LAN / Wi-Fi";
+
+  if (badge) {
+    badge.classList.remove("offline", "reconnecting");
+    if (reconnecting) {
+      badge.classList.add("reconnecting");
+      badge.textContent = "🔄 Переподключение сети...";
+    } else if (online) {
+      badge.textContent = `🟢 Интернет ОК · ${profile}`;
+    } else {
+      badge.classList.add("offline");
+      badge.textContent = `🔴 Нет интернета · ${profile}`;
+    }
+  }
+
+  const autoFlag = netInfo.network_guard_enabled !== undefined ? netInfo.network_guard_enabled : netInfo.auto_guard;
+  if (autoFlag !== undefined) {
+    updateAutoGuardUI(autoFlag);
+  }
+
+  if (tunnelBadge) {
+    if (netInfo.tunnel && typeof netInfo.tunnel === "object") {
+      const restarts = netInfo.tunnel.restarts || 0;
+      const runTxt = netInfo.tunnel.running ? "🟢 Туннель активен" : "🔴 Туннель остановлен";
+      tunnelBadge.textContent = restarts > 0 ? `${runTxt} (рестартов: ${restarts})` : runTxt;
+    } else if (currentCloudUrl) {
+      tunnelBadge.textContent = "🟢 Туннель активен";
+    }
+  }
+
+  const ev = netInfo.network_last_event || netInfo.last_event;
+  if (eventLine && ev) {
+    const vpnHint = netInfo.vpn_active ? " · 🛡️ VPN активен" : "";
+    eventLine.textContent = `${ev}${vpnHint}`;
+  }
+}
+
+async function refreshNetworkStatus() {
+  try {
+    const res = await apiCall("/api/pc/network/status", "GET");
+    if (!res || res.status !== "ok") return;
+    updateNetworkQuickUI(res, res.tunnel ? res.tunnel.url : null);
+
+    const sel = document.getElementById("wifiProfileSelect");
+    if (sel && Array.isArray(res.profiles)) {
+      const currentVal = sel.value;
+      sel.innerHTML = "";
+      if (res.profiles.length === 0) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "Wi-Fi профили не найдены";
+        sel.appendChild(opt);
+      } else {
+        res.profiles.forEach(p => {
+          const opt = document.createElement("option");
+          opt.value = p;
+          opt.textContent = (res.wifi_profile && p === res.wifi_profile) ? `✓ ${p} (текущая)` : p;
+          sel.appendChild(opt);
+        });
+        if (res.wifi_profile && res.profiles.includes(res.wifi_profile)) {
+          sel.value = res.wifi_profile;
+        } else if (currentVal && res.profiles.includes(currentVal)) {
+          sel.value = currentVal;
+        }
+      }
+    }
+  } catch (e) {}
+}
+
+function initNetworkGuardControls() {
+  const btnRefresh = document.getElementById("btnRefreshNetworkStatus");
+  if (btnRefresh) {
+    btnRefresh.addEventListener("click", () => {
+      haptic(20);
+      refreshNetworkStatus();
+      showToast("Статус сети обновлён");
+    });
+  }
+
+  const btnReconnect = document.getElementById("btnReconnectNetwork");
+  if (btnReconnect) {
+    btnReconnect.addEventListener("click", async () => {
+      haptic(35);
+      btnReconnect.disabled = true;
+      try {
+        const res = await apiCall("/api/pc/network/reconnect", "POST", {});
+        showToast(res?.message || "Переподключаю интернет и туннель...");
+        setTimeout(refreshNetworkStatus, 5000);
+        setTimeout(() => { pollStatus(); refreshNetworkStatus(); }, 11000);
+      } catch (e) {
+        showToast("Запрос на реконнект отправлен (или связь в процессе сброса)");
+        setTimeout(() => { pollStatus(); refreshNetworkStatus(); }, 9000);
+      } finally {
+        setTimeout(() => { btnReconnect.disabled = false; }, 3500);
+      }
+    });
+  }
+
+  const btnSwitchWifi = document.getElementById("btnSwitchWifi");
+  const wifiSelect = document.getElementById("wifiProfileSelect");
+  if (btnSwitchWifi && wifiSelect) {
+    btnSwitchWifi.addEventListener("click", async () => {
+      const targetProfile = (wifiSelect.value || "").trim();
+      if (!targetProfile) {
+        showToast("Выбери Wi-Fi сеть из списка");
+        return;
+      }
+      haptic(30);
+      btnSwitchWifi.disabled = true;
+      try {
+        const res = await apiCall("/api/pc/network/switch", "POST", { profile: targetProfile });
+        showToast(res?.message || `Переключаю Wi-Fi на ${targetProfile}...`);
+        setTimeout(() => { pollStatus(); refreshNetworkStatus(); }, 9000);
+      } catch (e) {
+        showToast("Ошибка смены Wi-Fi: " + (e.message || "сбой"));
+      } finally {
+        setTimeout(() => { btnSwitchWifi.disabled = false; }, 3500);
+      }
+    });
+  }
+
+  const btnRestartTunnel = document.getElementById("btnRestartTunnel");
+  if (btnRestartTunnel) {
+    btnRestartTunnel.addEventListener("click", async () => {
+      haptic(25);
+      btnRestartTunnel.disabled = true;
+      try {
+        const res = await apiCall("/api/pc/network/restart_tunnel", "POST", {});
+        showToast(res?.message || "Cloudflare перезапускается, новая ссылка придёт в TG");
+        setTimeout(() => { pollStatus(); refreshNetworkStatus(); }, 7000);
+      } catch (e) {
+        showToast("Ошибка перезапуска туннеля");
+      } finally {
+        setTimeout(() => { btnRestartTunnel.disabled = false; }, 3500);
+      }
+    });
+  }
+
+  const btnToggleGuard = document.getElementById("btnToggleAutoGuard");
+  if (btnToggleGuard) {
+    btnToggleGuard.addEventListener("click", async () => {
+      haptic(25);
+      const nextState = !isNetworkAutoGuardActive;
+      try {
+        const res = await apiCall("/api/pc/network/autoguard", "POST", { enable: nextState });
+        if (res && res.status === "ok") {
+          updateAutoGuardUI(res.auto_guard);
+          showToast(res.auto_guard ? "🛡️ Авто-реконнект включен (24/7)" : "🛡️ Авто-реконнект поставлен на паузу");
+          refreshNetworkStatus();
+        }
+      } catch (e) {
+        showToast("Ошибка переключения Network Guard");
+      }
+    });
+  }
+}
+
 // --- 9. ANTIGRAVITY ACCOUNTS VAULT & REMOTE SWITCHER ---
 async function fetchAccounts() {
   const container = document.getElementById("accountsVaultList");
@@ -2801,24 +3581,25 @@ async function fetchAccounts() {
 
     container.innerHTML = accounts.map(acc => {
       const email = acc.email || "Unknown";
+      const safeEmail = escapeHtml(email);
       const isActive = acc.is_active || (email === activeEmail);
       const updated = acc.saved_at ? new Date(acc.saved_at * 1000).toLocaleDateString() : "";
 
       return `
         <div class="account-vault-row ${isActive ? 'is-active' : ''}">
           <div class="account-info">
-            <span class="account-email" title="${email}">${email}</span>
+            <span class="account-email" title="${safeEmail}">${safeEmail}</span>
             <div class="account-meta">
               ${isActive ? '<span class="account-badge-active">● Активен (Квоты IDE)</span>' : '<span>Сохранен</span>'}
-              ${updated ? `<span>· ${updated}</span>` : ''}
+              ${updated ? `<span>· ${escapeHtml(updated)}</span>` : ''}
             </div>
           </div>
           <div class="account-actions">
             ${!isActive ? `
-              <button class="btn-switch-account" data-email="${email}">
+              <button class="btn-switch-account" data-email="${safeEmail}">
                 Переключить
               </button>
-              <button class="btn-delete-account" data-delete-email="${email}" title="Удалить из списка">
+              <button class="btn-delete-account" data-delete-email="${safeEmail}" title="Удалить из списка">
                 ✕
               </button>
             ` : '<span style="font-size: 12px; font-weight: 600; color: #10B981; padding: 4px 8px;">Текущий</span>'}
@@ -3219,15 +4000,31 @@ function initServerLogs() {
 function initScreenshotDownload() {
   const btn = document.getElementById("btnDownloadScreenSnapshot");
   if (!btn) return;
-  btn.addEventListener("click", () => {
+  btn.addEventListener("click", async () => {
     haptic(20);
-    const link = document.createElement("a");
-    link.href = `/api/pc/screenshot?t=${Date.now()}`;
-    link.download = `pc_screenshot_${Date.now()}.png`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    showToast("📸 Скриншот скачан в галерею/загрузки");
+    try {
+      let dataUrl = currentMonitorScreenshot;
+      if (!dataUrl) {
+        const res = await apiCall("/api/pc/screenshot");
+        if (res && res.status === "ok" && res.image) {
+          dataUrl = res.image;
+          currentMonitorScreenshot = dataUrl;
+        }
+      }
+      if (!dataUrl || !isSafeImageDataUrl(dataUrl)) {
+        showToast("Не удалось получить снимок экрана");
+        return;
+      }
+      const link = document.createElement("a");
+      link.href = dataUrl;
+      link.download = `pc_screenshot_${Date.now()}.jpg`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      showToast("📸 Скриншот сохранён");
+    } catch (e) {
+      showToast("Ошибка скачивания снимка: " + e.message);
+    }
   });
 }
 
@@ -3405,9 +4202,12 @@ async function checkNetworkPing() {
 
 // Initializer
 window.addEventListener("DOMContentLoaded", () => {
+  applyConnectionConfig();
   setupEvents();
   initCustomMacros();
   initCaffeineControls();
+  initGameModeControls();
+  initNetworkGuardControls();
   initAccountManager();
   initServerLogs();
   initScreenshotDownload();
@@ -3416,8 +4216,17 @@ window.addEventListener("DOMContentLoaded", () => {
   initClipboardSync();
   initFileExplorer();
   initBrightnessControls();
-  discoverCloudUrl();
+  const prevInitHost = config.host;
+  discoverCloudUrl(false, true).then((freshUrl) => {
+    if (freshUrl && config.host !== prevInitHost) {
+      pollStatus();
+      refreshNetworkStatus();
+      loadConversations();
+      fetchChat(true);
+    }
+  });
   pollStatus();
+  refreshNetworkStatus();
   loadConversations();
   fetchChat(true);
   fetchActiveWindows();
@@ -3431,15 +4240,23 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   } catch (e) {}
 
-  // Regular Polling intervals
-  statusPollTimer = setInterval(pollStatus, 3000);
+  // Regular Polling intervals (throttled automatically when Game Mode is active)
+  let pollTick = 0;
+  statusPollTimer = setInterval(() => {
+    pollTick++;
+    if (isGameModeActive && pollTick % 2 !== 0) return;
+    pollStatus();
+  }, 3000);
   chatPollTimer = setInterval(() => {
     if (activeTab === "tabAntigravity") {
       fetchChat(false);
     }
   }, 1800);
 
+  let monitorTick = 0;
   setInterval(() => {
+    monitorTick++;
+    if (isGameModeActive && monitorTick % 2 !== 0) return;
     if (activeTab === "tabControls") {
       fetchActiveWindows();
     } else if (activeTab === "tabMonitor") {
