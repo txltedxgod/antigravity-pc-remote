@@ -11,6 +11,17 @@ Control your PC, manage media and system power, monitor hardware telemetry in re
 
 ---
 
+## 🎬 Feature Demo
+
+<p align="center">
+  <img src="assets/demo.gif" alt="Antigravity PC Remote & CDP Bridge Feature Demo" width="840" />
+</p>
+<p align="center">
+  <sub><a href="assets/demo.mp4">Watch / Download 1080p60 MP4</a></sub>
+</p>
+
+---
+
 ## 🌟 Key Features
 
 ### 1. 🤖 Antigravity 2.0 IDE Direct Injection
